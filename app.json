@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "피트니스 앱",
+    "slug": "workout-meal-plan-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.workoutmealplan.app"
+    },
+    "android": {
+      "package": "com.workoutmealplan.app",
+      "permissions": [
+        "ACTIVITY_RECOGNITION"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
