@@ -243,7 +243,10 @@ export function Challenge() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView 
+        style={styles.content}
+        contentContainerStyle={styles.scrollViewContent}
+      >
         {activeTab === 'weekly' && (
           <View>
             <Card style={styles.card}>
@@ -502,6 +505,9 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
   },
+  scrollViewContent: {
+    paddingBottom: 80, // 탭바 높이 + 여유 공간
+  },
   card: {
     marginBottom: 16,
   },
@@ -652,5 +658,6 @@ const styles = StyleSheet.create({
   modalButtons: {
     flexDirection: 'row',
     gap: 8,
+    marginTop: 16,
   },
 });

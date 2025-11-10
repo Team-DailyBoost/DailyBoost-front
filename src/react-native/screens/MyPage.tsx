@@ -7,8 +7,13 @@ import {
   StyleSheet,
   Switch,
   Alert,
+  Modal,
+  TextInput,
+  Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { UserService } from '../../services/userService';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -36,22 +41,23 @@ const TIER_ICONS = {
   diamond: '👑',
 };
 
-export function MyPage() {
+export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
   const [notifications, setNotifications] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
   const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
   const [followers, setFollowers] = useState(0);
   const [following, setFollowing] = useState(0);
-
-  const currentUser = {
-    name: '사용자',
-    email: 'user@example.com',
-    age: 25,
-    gender: 'male',
-    height: 175,
-    weight: 70,
-    goal: 'weightLoss',
-  };
+  const [currentUser, setCurrentUser] = useState<any>({});
+  const [profileImage, setProfileImage] = useState<string | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: '',
+    age: '',
+    gender: 'male' as 'male' | 'female',
+    height: '',
+    weight: '',
+    goal: 'maintenance',
+  });
 
   useEffect(() => {
     loadUserData();
@@ -59,7 +65,16 @@ export function MyPage() {
 
   const loadUserData = async () => {
     try {
-      const userId = currentUser.email;
+      const saved = await AsyncStorage.getItem('currentUser');
+      const parsed = saved ? JSON.parse(saved) : null;
+      setCurrentUser(parsed || {});
+      // Try backend profile
+      const profile = await UserService.getProfile();
+      if (profile) {
+        setCurrentUser(profile);
+        await AsyncStorage.setItem('currentUser', JSON.stringify(profile));
+      }
+      const userId = (profile?.email || parsed?.email) as string;
       const progress = await AsyncStorage.getItem(`userProgress_${userId}`);
       if (progress) {
         setUserProgress(JSON.parse(progress));
@@ -71,21 +86,68 @@ export function MyPage() {
         setFollowing(followingList.length);
       }
 
-      // Mock followers count
       setFollowers(12);
+
+      // 프로필 사진 로드
+      const savedProfileImage = await AsyncStorage.getItem(`profileImage_${userId}`);
+      if (savedProfileImage) {
+        setProfileImage(savedProfileImage);
+      } else if (parsed?.profileImage) {
+        setProfileImage(parsed.profileImage);
+      }
     } catch (error) {
       console.error('Failed to load user data:', error);
     }
   };
 
-  const handleLogout = () => {
+  const pickProfileImage = async () => {
+    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    
+    if (permissionResult.granted === false) {
+      Alert.alert('알림', '사진 접근 권한이 필요합니다.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaType.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      const imageUri = result.assets[0].uri;
+      setProfileImage(imageUri);
+      const userId = currentUser?.email || 'user@example.com';
+      
+      // AsyncStorage에 저장
+      await AsyncStorage.setItem(`profileImage_${userId}`, imageUri);
+      
+      // currentUser에도 저장
+      const updatedUser = { ...currentUser, profileImage: imageUri };
+      setCurrentUser(updatedUser);
+      await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      
+      Alert.alert('완료', '프로필 사진이 설정되었습니다.');
+    }
+  };
+
+  const handleLogout = async () => {
     Alert.alert('로그아웃', '로그아웃 하시겠습니까?', [
       { text: '취소', style: 'cancel' },
       {
         text: '로그아웃',
         onPress: async () => {
-          await AsyncStorage.removeItem('currentUser');
-          // Navigate to login screen
+          try { await UserService.logout(); } catch {}
+          try {
+            await AsyncStorage.multiRemove([
+              'currentUser',
+              `userProgress_${currentUser?.email}`,
+              `following_${currentUser?.email}`,
+            ]);
+          } catch {}
+          Alert.alert('완료', '로그아웃되었습니다.');
+          if (onLoggedOut) onLoggedOut();
         },
       },
     ]);
@@ -118,10 +180,27 @@ export function MyPage() {
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scrollView}>
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollViewContent}
+      >
         <View style={styles.header}>
           <Text style={styles.title}>마이페이지</Text>
-          <TouchableOpacity style={styles.editButton}>
+          <TouchableOpacity 
+            style={styles.editButton}
+            onPress={() => {
+              // 프로필 수정 모달 열기
+              setEditForm({
+                name: currentUser.name || '',
+                age: String(currentUser.age || ''),
+                gender: currentUser.gender || 'male',
+                height: String(currentUser.height || ''),
+                weight: String(currentUser.weight || ''),
+                goal: currentUser.goal || 'maintenance',
+              });
+              setShowEditModal(true);
+            }}
+          >
             <Text style={styles.editButtonText}>✏️</Text>
           </TouchableOpacity>
         </View>
@@ -129,9 +208,20 @@ export function MyPage() {
         {/* Profile Card */}
         <Card style={styles.profileCard}>
           <View style={styles.profileHeader}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>👤</Text>
-            </View>
+            <TouchableOpacity onPress={pickProfileImage} style={styles.avatarContainer}>
+              {profileImage ? (
+                <Image source={{ uri: profileImage }} style={styles.avatar} />
+              ) : (
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>
+                    {currentUser.name?.charAt(0)?.toUpperCase() || '👤'}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.avatarEditBadge}>
+                <Text style={styles.avatarEditText}>📷</Text>
+              </View>
+            </TouchableOpacity>
             <View style={styles.profileInfo}>
               <View style={styles.nameRow}>
                 <Text style={styles.name}>{currentUser.name}</Text>
@@ -273,6 +363,162 @@ export function MyPage() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Profile Edit Modal */}
+      <Modal
+        visible={showEditModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowEditModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>프로필 수정</Text>
+
+            <Text style={styles.modalLabel}>이름</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="이름을 입력하세요"
+              value={editForm.name}
+              onChangeText={text => setEditForm({ ...editForm, name: text })}
+            />
+
+            <Text style={styles.modalLabel}>나이</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="나이를 입력하세요"
+              keyboardType="numeric"
+              value={editForm.age}
+              onChangeText={text => setEditForm({ ...editForm, age: text })}
+            />
+
+            <Text style={styles.modalLabel}>성별</Text>
+            <View style={styles.modalRow}>
+              <TouchableOpacity
+                style={[
+                  styles.genderButton,
+                  editForm.gender === 'male' && styles.genderButtonActive,
+                ]}
+                onPress={() => setEditForm({ ...editForm, gender: 'male' })}
+              >
+                <Text
+                  style={[
+                    styles.genderButtonText,
+                    editForm.gender === 'male' && styles.genderButtonTextActive,
+                  ]}
+                >
+                  남성
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.genderButton,
+                  editForm.gender === 'female' && styles.genderButtonActive,
+                ]}
+                onPress={() => setEditForm({ ...editForm, gender: 'female' })}
+              >
+                <Text
+                  style={[
+                    styles.genderButtonText,
+                    editForm.gender === 'female' && styles.genderButtonTextActive,
+                  ]}
+                >
+                  여성
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalRow}>
+              <View style={styles.modalColumn}>
+                <Text style={styles.modalLabel}>키 (cm)</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="키"
+                  keyboardType="numeric"
+                  value={editForm.height}
+                  onChangeText={text => setEditForm({ ...editForm, height: text })}
+                />
+              </View>
+              <View style={styles.modalColumn}>
+                <Text style={styles.modalLabel}>몸무게 (kg)</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="몸무게"
+                  keyboardType="numeric"
+                  value={editForm.weight}
+                  onChangeText={text => setEditForm({ ...editForm, weight: text })}
+                />
+              </View>
+            </View>
+
+            <Text style={styles.modalLabel}>운동 목표</Text>
+            <View style={styles.goalButtons}>
+              {Object.entries(goalLabels).map(([key, label]) => (
+                <TouchableOpacity
+                  key={key}
+                  style={[
+                    styles.goalButton,
+                    editForm.goal === key && styles.goalButtonActive,
+                  ]}
+                  onPress={() => setEditForm({ ...editForm, goal: key })}
+                >
+                  <Text
+                    style={[
+                      styles.goalButtonText,
+                      editForm.goal === key && styles.goalButtonTextActive,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.modalButtons}>
+              <Button
+                title="취소"
+                onPress={() => setShowEditModal(false)}
+                variant="outline"
+              />
+              <Button
+                title="저장"
+                onPress={async () => {
+                  if (!editForm.name.trim()) {
+                    Alert.alert('알림', '이름을 입력해주세요');
+                    return;
+                  }
+                  
+                  const updatedUser = {
+                    ...currentUser,
+                    name: editForm.name,
+                    age: parseInt(editForm.age) || currentUser.age,
+                    gender: editForm.gender,
+                    height: parseFloat(editForm.height) || currentUser.height,
+                    weight: parseFloat(editForm.weight) || currentUser.weight,
+                    goal: editForm.goal,
+                  };
+                  
+                  try {
+                    // 백엔드에 프로필 업데이트 요청
+                    await UserService.updateProfile(updatedUser);
+                    setCurrentUser(updatedUser);
+                    await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+                    Alert.alert('완료', '프로필이 수정되었습니다');
+                    setShowEditModal(false);
+                  } catch (error) {
+                    console.error('프로필 업데이트 실패:', error);
+                    // 백엔드 실패해도 로컬 저장
+                    setCurrentUser(updatedUser);
+                    await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+                    Alert.alert('완료', '프로필이 수정되었습니다');
+                    setShowEditModal(false);
+                  }
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -284,6 +530,9 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  scrollViewContent: {
+    paddingBottom: 80, // 탭바 높이 + 여유 공간
   },
   header: {
     flexDirection: 'row',
@@ -313,6 +562,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginBottom: 16,
   },
+  avatarContainer: {
+    position: 'relative',
+    marginRight: 16,
+  },
   avatar: {
     width: 64,
     height: 64,
@@ -320,10 +573,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#f0f0f0',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
+    overflow: 'hidden',
   },
   avatarText: {
     fontSize: 32,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: '#007AFF',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  avatarEditText: {
+    fontSize: 12,
   },
   profileInfo: {
     flex: 1,
@@ -465,5 +734,104 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FF3B30',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 20,
+    width: '90%',
+    maxHeight: '90%',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  modalLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    marginTop: 12,
+    color: '#333',
+  },
+  modalInput: {
+    backgroundColor: '#f9f9f9',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    fontSize: 16,
+    color: '#000',
+    marginBottom: 4,
+  },
+  modalRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 4,
+  },
+  modalColumn: {
+    flex: 1,
+  },
+  genderButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+  },
+  genderButtonActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  genderButtonText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  genderButtonTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  goalButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  goalButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    backgroundColor: '#fff',
+  },
+  goalButtonActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  goalButtonText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  goalButtonTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 20,
   },
 });

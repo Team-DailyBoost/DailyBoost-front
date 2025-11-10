@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- http://112.165.239.133:8080 으로 가는 평문 트래픽 허용 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">112.165.239.133</domain>
+    </domain-config>
+</network-security-config>
+

@@ -2,8 +2,9 @@ import React from 'react';
 import { View, StyleSheet, ViewStyle } from 'react-native';
 
 interface ProgressBarProps {
-  value: number;
+  value?: number;
   max?: number;
+  progress?: number;
   color?: string;
   backgroundColor?: string;
   height?: number;
@@ -13,12 +14,18 @@ interface ProgressBarProps {
 export const ProgressBar: React.FC<ProgressBarProps> = ({
   value,
   max = 100,
+  progress,
   color = '#6366f1',
-  backgroundColor = '#e5e7eb',
+  backgroundColor = '#E0E0E0',
   height = 8,
   style,
 }) => {
-  const percentage = Math.min(Math.max((value / max) * 100, 0), 100);
+  // Support both value/max and progress props for flexibility
+  const percentage = progress !== undefined 
+    ? Math.min(Math.max(progress, 0), 100)
+    : value !== undefined
+    ? Math.min(Math.max((value / max) * 100, 0), 100)
+    : 0;
 
   return (
     <View

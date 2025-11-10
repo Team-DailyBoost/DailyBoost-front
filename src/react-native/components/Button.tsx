@@ -9,7 +9,8 @@ import {
 } from 'react-native';
 
 interface ButtonProps {
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  title?: string; // title prop 추가 지원
   onPress?: () => void;
   variant?: 'default' | 'outline' | 'ghost' | 'destructive';
   size?: 'default' | 'sm' | 'lg';
@@ -21,6 +22,7 @@ interface ButtonProps {
 
 export const Button: React.FC<ButtonProps> = ({
   children,
+  title,
   onPress,
   variant = 'default',
   size = 'default',
@@ -58,7 +60,7 @@ export const Button: React.FC<ButtonProps> = ({
           size="small"
         />
       ) : (
-        <Text style={textStyles}>{children}</Text>
+        <Text style={textStyles}>{title || children}</Text>
       )}
     </TouchableOpacity>
   );

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,14 +7,44 @@ import {
   Dimensions,
   TouchableOpacity,
   RefreshControl,
+  Alert,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LineChart, BarChart } from 'react-native-chart-kit';
 import { Feather as Icon } from '@expo/vector-icons';
+import { FoodService } from '../../services/foodService';
+import { WorkoutService } from '../../services/workoutService';
 
 const screenWidth = Dimensions.get('window').width;
 
+interface ExerciseRecommendation {
+  id: string;
+  name: string;
+  description: string;
+  level: string;
+  duration?: number;
+}
+
+interface DietRecommendation {
+  id: string;
+  name: string;
+  foodKind: string;
+  calory: number;
+  protein: number;
+  carbohydrate: number;
+  fat: number;
+}
+
 export function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
+  const [workoutTimer, setWorkoutTimer] = useState<number>(0);
+  const [exerciseRecommendations, setExerciseRecommendations] = useState<ExerciseRecommendation[]>([]);
+  const [dietRecommendations, setDietRecommendations] = useState<DietRecommendation[]>([]);
+  const [loadingExercise, setLoadingExercise] = useState(false);
+  const [loadingDiet, setLoadingDiet] = useState(false);
+  
+  // 중복 호출 방지 플래그
+  const requestingExerciseRef = useRef(false);
   
   const today = new Date().toLocaleDateString('ko-KR', {
     year: 'numeric',
@@ -98,7 +128,6 @@ export function Dashboard() {
 
   const character = getCharacterState();
 
-  // Mock InBody data
   const inBodyData = {
     weight: 69.5,
     muscleMass: 32.8,
@@ -128,9 +157,126 @@ export function Dashboard() {
     { title: '체중 감량 1kg', achieved: false }
   ];
 
-  const onRefresh = () => {
+  useEffect(() => {
+    loadWorkoutTimer();
+    const interval = setInterval(() => {
+      loadWorkoutTimer();
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const loadWorkoutTimer = async () => {
+    try {
+      const saved = await AsyncStorage.getItem('workoutTimerSeconds');
+      if (saved) {
+        setWorkoutTimer(parseInt(saved) || 0);
+      }
+    } catch (error) {
+      console.error('Failed to load workout timer:', error);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // 운동 추천 API 호출 (중복 호출 방지)
+  const loadExerciseRecommendations = async () => {
+    // 이미 요청 중이면 건너뜀
+    if (requestingExerciseRef.current) {
+      return;
+    }
+
+    requestingExerciseRef.current = true;
+    setLoadingExercise(true);
+    
+    try {
+      const userStr = await AsyncStorage.getItem('currentUser');
+      if (!userStr) {
+        Alert.alert('알림', '로그인이 필요합니다.');
+        return;
+      }
+
+      // 운동 추천 API 호출
+      const userInput = `집에서 할 수 있는 운동을 30분 동안 추천해줘.`;
+      const level = 'INTERMEDIATE';
+      
+      const response = await WorkoutService.getExerciseRecommendation(userInput, level);
+      
+      if (response.success && response.data) {
+        const data = response.data.value || response.data;
+        if (data.exerciseInfoDto && Array.isArray(data.exerciseInfoDto)) {
+          const exercises: ExerciseRecommendation[] = data.exerciseInfoDto.map((item: any, index: number) => ({
+            id: `exercise_${index}`,
+            name: item.name || '추천 운동',
+            description: item.description || 'AI 추천 운동',
+            level: item.level || 'INTERMEDIATE',
+            duration: item.duration || 30,
+          }));
+          setExerciseRecommendations(exercises);
+        } else {
+          setExerciseRecommendations([]);
+        }
+      } else {
+        setExerciseRecommendations([]);
+      }
+    } catch (error: any) {
+      setExerciseRecommendations([]);
+    } finally {
+      setLoadingExercise(false);
+      requestingExerciseRef.current = false;
+    }
+  };
+
+  const loadDietRecommendations = async () => {
+    setLoadingDiet(true);
+    try {
+      const userStr = await AsyncStorage.getItem('currentUser');
+      if (!userStr) {
+        Alert.alert('알림', '로그인이 필요합니다.');
+        return;
+      }
+      
+      const user = JSON.parse(userStr);
+      const response = await FoodService.getFoodRecommendations(user.id || user.email);
+      
+      if (response.success && response.data) {
+        const data = response.data.value || response.data;
+        if (Array.isArray(data) && data.length > 0) {
+          const meals: DietRecommendation[] = data.map((item: any, index: number) => ({
+            id: item.id || `diet_${index}`,
+            name: item.name || '추천 식단',
+            foodKind: item.foodKind || 'LUNCH',
+            calory: parseInt(item.calory) || 0,
+            protein: parseInt(item.protein) || 0,
+            carbohydrate: parseInt(item.carbohydrate) || 0,
+            fat: parseInt(item.fat) || 0,
+          }));
+          setDietRecommendations(meals);
+        } else {
+          setDietRecommendations([]);
+        }
+      } else {
+        setDietRecommendations([]);
+      }
+    } catch (error: any) {
+      setDietRecommendations([]);
+    } finally {
+      setLoadingDiet(false);
+    }
+  };
+
+  const onRefresh = async () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1000);
+    loadWorkoutTimer();
+    // 새로고침 시 추천 데이터도 함께 로드
+    await Promise.all([
+      loadExerciseRecommendations(),
+      loadDietRecommendations(),
+    ]);
+    setRefreshing(false);
   };
 
   const ProgressBar = ({ current, goal, label, unit = 'g' }: {
@@ -209,6 +355,14 @@ export function Dashboard() {
               운동 진행률: {exerciseProgress.toFixed(0)}%
             </Text>
           </View>
+          {workoutTimer > 0 && (
+            <View style={styles.timerInfo}>
+              <Icon name="clock" size={16} color="#6b7280" />
+              <Text style={styles.timerText}>
+                운동 시간: {formatTime(workoutTimer)}
+              </Text>
+            </View>
+          )}
         </View>
       </Card>
 
@@ -376,7 +530,7 @@ export function Dashboard() {
           <LineChart
             data={weightData}
             width={screenWidth - 64}
-            height={140}
+            height={200}
             chartConfig={{
               backgroundColor: '#ffffff',
               backgroundGradientFrom: '#ffffff',
@@ -430,17 +584,128 @@ export function Dashboard() {
         </View>
       </Card>
 
-      {/* Quick Actions */}
-      <View style={styles.quickActions}>
-        <TouchableOpacity style={styles.quickActionCard}>
-          <Icon name="activity" size={32} color="#6366f1" />
-          <Text style={styles.quickActionText}>운동 시작</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionCard}>
-          <Icon name="target" size={32} color="#6366f1" />
-          <Text style={styles.quickActionText}>식단 기록</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Exercise Recommendations */}
+      <Card>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardTitleContainer}>
+            <Icon name="activity" size={20} color="#1f2937" />
+            <Text style={styles.cardTitle}>운동 추천</Text>
+          </View>
+          <TouchableOpacity
+            onPress={loadExerciseRecommendations}
+            disabled={loadingExercise}
+            style={styles.refreshButton}
+          >
+            <Icon 
+              name="refresh-cw" 
+              size={18} 
+              color={loadingExercise ? "#9ca3af" : "#6366f1"}
+            />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.cardContent}>
+          {loadingExercise ? (
+            <View style={styles.loadingContainer}>
+              <Text style={styles.loadingText}>추천 운동을 불러오는 중...</Text>
+            </View>
+          ) : exerciseRecommendations.length > 0 ? (
+            exerciseRecommendations.map((exercise) => (
+              <View key={exercise.id} style={styles.recommendationItem}>
+                <View style={styles.recommendationHeader}>
+                  <Text style={styles.recommendationTitle}>{exercise.name}</Text>
+                  <View style={[styles.levelBadge, styles.levelBadgeIntermediate]}>
+                    <Text style={styles.levelBadgeText}>{exercise.level}</Text>
+                  </View>
+                </View>
+                <Text style={styles.recommendationDescription}>{exercise.description}</Text>
+                {exercise.duration && (
+                  <View style={styles.recommendationMeta}>
+                    <Icon name="clock" size={14} color="#6b7280" />
+                    <Text style={styles.recommendationMetaText}>{exercise.duration}분</Text>
+                  </View>
+                )}
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyContainer}>
+              <Icon name="activity" size={32} color="#d1d5db" />
+              <Text style={styles.emptyText}>추천 운동이 없습니다</Text>
+              <Text style={styles.emptySubtext}>새로고침 버튼을 눌러 추천을 받아보세요</Text>
+            </View>
+          )}
+        </View>
+      </Card>
+
+      {/* Diet Recommendations */}
+      <Card>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardTitleContainer}>
+            <Icon name="coffee" size={20} color="#1f2937" />
+            <Text style={styles.cardTitle}>식단 추천</Text>
+          </View>
+          <TouchableOpacity
+            onPress={loadDietRecommendations}
+            disabled={loadingDiet}
+            style={styles.refreshButton}
+          >
+            <Icon 
+              name="refresh-cw" 
+              size={18} 
+              color={loadingDiet ? "#9ca3af" : "#6366f1"}
+            />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.cardContent}>
+          {loadingDiet ? (
+            <View style={styles.loadingContainer}>
+              <Text style={styles.loadingText}>추천 식단을 불러오는 중...</Text>
+            </View>
+          ) : dietRecommendations.length > 0 ? (
+            dietRecommendations.map((meal) => {
+              const mealTypeEmoji = meal.foodKind === 'BREAKFAST' ? '🌅' : 
+                                   meal.foodKind === 'LUNCH' ? '🌞' : '🌙';
+              const mealTypeName = meal.foodKind === 'BREAKFAST' ? '아침' : 
+                                  meal.foodKind === 'LUNCH' ? '점심' : '저녁';
+              
+              return (
+                <View key={meal.id} style={styles.recommendationItem}>
+                  <View style={styles.recommendationHeader}>
+                    <Text style={styles.recommendationTitle}>
+                      {mealTypeEmoji} {meal.name}
+                    </Text>
+                    <Text style={styles.mealTypeText}>{mealTypeName}</Text>
+                  </View>
+                  <View style={styles.nutritionInfo}>
+                    <View style={styles.nutritionItem}>
+                      <Text style={styles.nutritionLabel}>칼로리</Text>
+                      <Text style={styles.nutritionValue}>{meal.calory}kcal</Text>
+                    </View>
+                    <View style={styles.nutritionItem}>
+                      <Text style={styles.nutritionLabel}>단백질</Text>
+                      <Text style={styles.nutritionValue}>{meal.protein}g</Text>
+                    </View>
+                    <View style={styles.nutritionItem}>
+                      <Text style={styles.nutritionLabel}>탄수화물</Text>
+                      <Text style={styles.nutritionValue}>{meal.carbohydrate}g</Text>
+                    </View>
+                    <View style={styles.nutritionItem}>
+                      <Text style={styles.nutritionLabel}>지방</Text>
+                      <Text style={styles.nutritionValue}>{meal.fat}g</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })
+          ) : (
+            <View style={styles.emptyContainer}>
+              <Icon name="coffee" size={32} color="#d1d5db" />
+              <Text style={styles.emptyText}>추천 식단이 없습니다</Text>
+              <Text style={styles.emptySubtext}>새로고침 버튼을 눌러 추천을 받아보세요</Text>
+            </View>
+          )}
+        </View>
+      </Card>
+
     </ScrollView>
   );
 }
@@ -528,11 +793,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6b7280',
   },
+  timerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+  },
+  timerText: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
   cardHeader: {
     padding: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#f3f4f6',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   cardTitleContainer: {
     flexDirection: 'row',
@@ -746,26 +1025,106 @@ const styles = StyleSheet.create({
   badgeTextInProgress: {
     color: '#6b7280',
   },
-  quickActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
+  refreshButton: {
+    padding: 4,
   },
-  quickActionCard: {
-    flex: 1,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
+  loadingContainer: {
+    padding: 20,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
   },
-  quickActionText: {
-    fontSize: 13,
+  loadingText: {
+    fontSize: 14,
+    color: '#6b7280',
+  },
+  recommendationItem: {
+    padding: 16,
+    backgroundColor: '#f9fafb',
+    borderRadius: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  recommendationHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  recommendationTitle: {
+    fontSize: 16,
+    fontWeight: '600',
     color: '#1f2937',
-    marginTop: 8,
+    flex: 1,
+  },
+  recommendationDescription: {
+    fontSize: 14,
+    color: '#6b7280',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  recommendationMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  recommendationMetaText: {
+    fontSize: 12,
+    color: '#6b7280',
+  },
+  levelBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  levelBadgeIntermediate: {
+    backgroundColor: '#dbeafe',
+  },
+  levelBadgeText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#2563eb',
+  },
+  mealTypeText: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginLeft: 8,
+  },
+  nutritionInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e5e7eb',
+  },
+  nutritionItem: {
+    alignItems: 'center',
+  },
+  nutritionLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginBottom: 4,
+  },
+  nutritionValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1f2937',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 12,
+    fontWeight: '500',
+  },
+  emptySubtext: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginTop: 4,
+    textAlign: 'center',
   },
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,11 +7,14 @@ import {
   TextInput,
   StyleSheet,
   Modal,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
+import { WorkoutService } from '../../services/workoutService';
 
 interface Exercise {
   id: string;
@@ -40,11 +43,16 @@ export function WorkoutLogger() {
   const [selectedBodyPart, setSelectedBodyPart] = useState<string>('');
   const [recommendationSeed, setRecommendationSeed] = useState(Date.now());
   const [workoutTime, setWorkoutTime] = useState<number>(30);
+  
+  // 중복 호출 방지 플래그
+  const requestingRecommendationsRef = useRef(false);
   const [condition, setCondition] = useState<'good' | 'normal' | 'tired'>('normal');
   const [activeTab, setActiveTab] = useState<'recommendations' | 'logger'>('recommendations');
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(0);
   const [targetSeconds, setTargetSeconds] = useState(0);
+  const [todaysRecommendations, setTodaysRecommendations] = useState<Exercise[]>([]);
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
 
   // Exercise database
   const exerciseDatabase: Exercise[] = [
@@ -76,7 +84,80 @@ export function WorkoutLogger() {
     { id: 'cardio', name: '유산소', icon: '❤️' },
   ];
 
+  // 운동 추천 API 호출 (중복 호출 방지)
+  const loadTodaysRecommendations = async () => {
+    // 이미 요청 중이면 건너뜀
+    if (requestingRecommendationsRef.current) {
+      return;
+    }
+
+    requestingRecommendationsRef.current = true;
+    setLoadingRecommendations(true);
+    
+    try {
+      // 실제 API 호출 (123 123 로그인 포함)
+      const userStr = await AsyncStorage.getItem('currentUser');
+      if (!userStr) {
+        Alert.alert('알림', '로그인이 필요합니다.');
+        return;
+      }
+
+      // 운동 추천 API 호출
+      const level = condition === 'good' ? 'ADVANCED' : condition === 'normal' ? 'INTERMEDIATE' : 'BEGINNER';
+      const userInput = `집에서 할 수 있는 운동을 ${workoutTime}분 동안 추천해줘. 컨디션은 ${condition === 'good' ? '좋음' : condition === 'normal' ? '보통' : '피곤함'}입니다.`;
+      
+      const response = await WorkoutService.getExerciseRecommendation(userInput, level);
+      
+      if (response.success && response.data) {
+        const data = response.data.value || response.data;
+        if (data.exerciseInfoDto && Array.isArray(data.exerciseInfoDto)) {
+          const exercises: Exercise[] = data.exerciseInfoDto.map((item: any, index: number) => ({
+            id: `ai_${index}`,
+            name: item.name || '추천 운동',
+            bodyPart: 'all',
+            isCardio: false,
+            calories: 8,
+            cautions: ['운동 전 준비운동 필수'],
+            description: item.description || 'AI 추천 운동',
+            difficulty: item.level?.toLowerCase() || 'beginner',
+          }));
+          setTodaysRecommendations(exercises);
+        } else {
+          throw new Error('응답 형식 오류');
+        }
+      } else {
+        throw new Error(response.error || '운동 추천 실패');
+      }
+    } catch (error: any) {
+      Alert.alert('오류', `운동 추천 중 오류가 발생했습니다.\n${error.message || error}`);
+      
+      // 에러 시 더미 데이터 사용 (fallback)
+      const day = new Date().getDay();
+      const recommendations: Record<number, string[]> = {
+        0: ['pushup', 'squat', 'pullup', 'shoulder_press', 'running'],
+        1: ['bench_press', 'squat', 'lat_pulldown', 'running'],
+        2: ['pushup', 'lunge', 'shoulder_press', 'hiit'],
+        3: ['dips', 'squat', 'pullup', 'running'],
+        4: ['pushup', 'lunge', 'lat_pulldown', 'hiit'],
+        5: ['bench_press', 'squat', 'shoulder_press', 'running'],
+        6: ['pushup', 'lunge', 'pullup', 'hiit'],
+      };
+      const todayIds = recommendations[day] || recommendations[0];
+      const exercises = todayIds.map(id => exerciseDatabase.find(e => e.id === id)!).filter(Boolean);
+      setTodaysRecommendations(exercises);
+    } finally {
+      setLoadingRecommendations(false);
+      requestingRecommendationsRef.current = false;
+    }
+  };
+
   const getTodaysRecommendations = (): Exercise[] => {
+    // 이미 로드된 추천이 있으면 사용
+    if (todaysRecommendations.length > 0) {
+      return todaysRecommendations;
+    }
+    
+    // 없으면 로컬 더미 데이터
     const day = new Date().getDay();
     const recommendations: Record<number, string[]> = {
       0: ['pushup', 'squat', 'pullup', 'shoulder_press', 'running'],
@@ -150,16 +231,29 @@ export function WorkoutLogger() {
     if (timerRunning) {
       interval = setInterval(() => {
         setTimerSeconds(prev => {
+          const newSeconds = targetSeconds > 0 && prev >= targetSeconds 
+            ? targetSeconds 
+            : prev + 1;
+          // AsyncStorage에 저장
+          AsyncStorage.setItem('workoutTimerSeconds', String(newSeconds));
           if (targetSeconds > 0 && prev >= targetSeconds) {
             setTimerRunning(false);
-            return targetSeconds;
           }
-          return prev + 1;
+          return newSeconds;
         });
       }, 1000);
     }
     return () => clearInterval(interval);
   }, [timerRunning, targetSeconds]);
+
+  useEffect(() => {
+    // 초기값 로드
+    AsyncStorage.getItem('workoutTimerSeconds').then(saved => {
+      if (saved) {
+        setTimerSeconds(parseInt(saved) || 0);
+      }
+    });
+  }, []);
 
   const startTimer = () => {
     if (workoutTime > 0) {
@@ -176,14 +270,25 @@ export function WorkoutLogger() {
     setTimerRunning(false);
     setTimerSeconds(0);
     setTargetSeconds(0);
+    AsyncStorage.setItem('workoutTimerSeconds', '0');
   };
 
-  const todaysRecommendations = getTodaysRecommendations();
+  // 초기 로드
+  useEffect(() => {
+    const initialRecommendations = getTodaysRecommendations();
+    if (initialRecommendations.length > 0 && todaysRecommendations.length === 0) {
+      setTodaysRecommendations(initialRecommendations);
+    }
+  }, []);
+
   const bodyPartRecommendations = selectedBodyPart ? getBodyPartRecommendations(selectedBodyPart) : [];
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scrollView}>
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollViewContent}
+      >
         <View style={styles.header}>
           <Text style={styles.title}>운동 💪</Text>
           <Text style={styles.subtitle}>오늘의 운동을 기록하세요</Text>
@@ -240,32 +345,62 @@ export function WorkoutLogger() {
                   <TouchableOpacity
                     key={item.value}
                     style={[styles.conditionButton, condition === item.value && styles.conditionButtonActive]}
-                    onPress={() => setCondition(item.value as any)}
+                    onPress={() => {
+                      setCondition(item.value as any);
+                      // 컨디션 변경 시 추천 다시 로드
+                      setTimeout(() => loadTodaysRecommendations(), 100);
+                    }}
                   >
                     <Text style={styles.conditionButtonText}>{item.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
+              
+              <TouchableOpacity
+                style={styles.reloadButton}
+                onPress={loadTodaysRecommendations}
+                disabled={loadingRecommendations}
+              >
+                {loadingRecommendations ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.reloadButtonText}>운동 추천 받기</Text>
+                )}
+              </TouchableOpacity>
             </Card>
 
             {/* Today's Recommendations */}
             <Card style={styles.card}>
-              <Text style={styles.cardTitle}>오늘의 추천 운동 ⭐</Text>
-              {todaysRecommendations.map((exercise, idx) => (
-                <View key={exercise.id} style={styles.exerciseCard}>
-                  <View style={styles.exerciseNumber}>
-                    <Text style={styles.exerciseNumberText}>{idx + 1}</Text>
+              <View style={styles.cardHeaderWithRefresh}>
+                <Text style={styles.cardTitle}>오늘의 추천 운동 ⭐</Text>
+                <TouchableOpacity 
+                  onPress={loadTodaysRecommendations}
+                  disabled={loadingRecommendations}
+                  style={styles.refreshButton}
+                >
+                  {loadingRecommendations ? (
+                    <ActivityIndicator size="small" color="#6366f1" />
+                  ) : (
+                    <Text style={styles.refreshIcon}>🔄</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+              {(getTodaysRecommendations().length === 0 && loadingRecommendations) ? (
+                <ActivityIndicator size="large" color="#6366f1" style={{ padding: 20 }} />
+              ) : (
+                getTodaysRecommendations().map((exercise, idx) => (
+                  <View key={exercise.id} style={styles.exerciseCard}>
+                    <View style={styles.exerciseNumber}>
+                      <Text style={styles.exerciseNumberText}>{idx + 1}</Text>
+                    </View>
+                    <View style={styles.exerciseContent}>
+                      <Text style={styles.exerciseName}>{exercise.name}</Text>
+                      <Text style={styles.exerciseDesc}>{exercise.description}</Text>
+                      <Button title="추가" onPress={() => addWorkout(exercise)} />
+                    </View>
                   </View>
-                  <View style={styles.exerciseContent}>
-                    <Text style={styles.exerciseName}>{exercise.name}</Text>
-                    <Text style={styles.exerciseDesc}>{exercise.description}</Text>
-                    <Text style={styles.exerciseCalories}>
-                      🔥 {exercise.calories}kcal {exercise.isCardio ? '/분' : '/세트'}
-                    </Text>
-                    <Button title="추가" onPress={() => addWorkout(exercise)} />
-                  </View>
-                </View>
-              ))}
+                ))
+              )}
             </Card>
 
             {/* Body Part Selection */}
@@ -428,6 +563,9 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
+  scrollViewContent: {
+    paddingBottom: 80, // 탭바 높이 + 여유 공간
+  },
   header: {
     padding: 20,
     alignItems: 'center',
@@ -474,6 +612,30 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 12,
+  },
+  cardHeaderWithRefresh: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  refreshButton: {
+    padding: 8,
+  },
+  refreshIcon: {
+    fontSize: 20,
+  },
+  reloadButton: {
+    backgroundColor: '#6366f1',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  reloadButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   label: {
     fontSize: 14,
