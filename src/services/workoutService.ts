@@ -1,5 +1,8 @@
 import { api, API_CONFIG } from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { FALLBACK_EXERCISE_RECOMMENDATIONS } from '../constants/fallbacks';
+import { ServiceResult } from '../types/service';
+import type { ExerciseRecommendationItem } from '../api/exercises';
 
 // NOTE:
 // 로그인은 WebView에서 해서 세션쿠키가 WebView 쪽에만 있음.
@@ -114,7 +117,11 @@ export class WorkoutService {
    * Note: Requires authentication
    * Response: Api<ExerciseRecommendation> where ExerciseRecommendation contains exerciseInfoDto array
    */
-  static async getExerciseRecommendation(userInput: string, level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER') {
+  static async getExerciseRecommendation(
+    userInput: string,
+    level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER',
+    part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING' = 'HOME_TRAINING'
+  ): Promise<ServiceResult<ExerciseRecommendationItem[]>> {
     try {
       // 사용자 정보 가져오기 (AsyncStorage 또는 API)
       let userInfoText = '';
@@ -170,54 +177,37 @@ export class WorkoutService {
       
       // 우리가 만든 client.ts 기반 API 사용
       const { getExerciseRecommendation } = await import('../api/exercises');
-      const result = await getExerciseRecommendation(enhancedUserInput, level);
+      const result = await getExerciseRecommendation(enhancedUserInput, level, part);
       
       
-      return { 
-        success: true, 
-        data: result 
+      return {
+        success: true,
+        data: result,
       };
     } catch (error: any) {
       
       // 인증 오류인 경우
       if (error.response?.status === 401 || error.response?.status === 403) {
-        return { 
-          success: false, 
-          error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.' 
+        return {
+          success: false,
+          error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.',
         };
       }
       
-      return { 
-        success: false, 
-        error: error.message || '운동 추천 실패' 
+      const reason = typeof error?.message === 'string' && error.message.trim().length > 0
+        ? error.message
+        : 'AI 운동 추천 서버가 응답하지 않습니다.';
+      console.warn('⚠️ 운동 추천 API 실패 - 기본 추천으로 대체:', reason);
+
+      return {
+        success: true,
+        data: FALLBACK_EXERCISE_RECOMMENDATIONS,
+        meta: {
+          usedFallback: true,
+          reason,
+        },
       };
     }
-  }
-
-  /**
-   * 백엔드 또는 프록시 응답을 화면에서 기대하는 형식으로 정규화
-   * - Api<T> 형태면 value 사용
-   * - 바로 exerciseInfoDto 배열이 오면 그대로 래핑
-   * - 배열이 그대로 오면 exerciseInfoDto로 래핑
-   */
-  private static normalizeExerciseResponse(raw: any): ExerciseRecommendation {
-    if (!raw) return { exerciseInfoDto: [] };
-    const value = (raw && typeof raw === 'object' && ('value' in raw)) ? raw.value : raw;
-    if (value && typeof value === 'object' && Array.isArray((value as any).exerciseInfoDto)) {
-      return { exerciseInfoDto: (value as any).exerciseInfoDto };
-    }
-    if (Array.isArray(value)) {
-      return { exerciseInfoDto: value as any[] } as ExerciseRecommendation;
-    }
-    // 다른 키로 올 가능성 (exerciseInfos 등) 대비
-    const candidateKeys = ['exerciseInfos', 'items', 'list'];
-    for (const k of candidateKeys) {
-      if (value && typeof value === 'object' && Array.isArray((value as any)[k])) {
-        return { exerciseInfoDto: (value as any)[k] } as ExerciseRecommendation;
-      }
-    }
-    // 알 수 없는 형식이면 빈 배열 반환
-    return { exerciseInfoDto: [] };
   }
 
   /**
@@ -225,7 +215,7 @@ export class WorkoutService {
    * 백엔드: POST /api/exercise/register
    * Note: Requires authentication
    */
-  static async registerExercise(exerciseRecommendation: ExerciseRecommendation) {
+  static async registerExercise(exerciseRecommendation: any) {
     try {
       return await api.post(API_CONFIG.ENDPOINTS.EXERCISE_REGISTER, exerciseRecommendation);
     } catch (error) {
@@ -233,22 +223,3 @@ export class WorkoutService {
     }
   }
 }
-
-/**
- * Exercise info DTO
- */
-export interface ExerciseInfoDto {
-  name: string;
-  description: string;
-  youtubeLinks: string;
-  level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
-}
-
-/**
- * Exercise recommendation interface (for registration)
- * 백엔드: POST /api/exercise/register
- */
-export interface ExerciseRecommendation {
-  exerciseInfoDto: ExerciseInfoDto[];
-}
-

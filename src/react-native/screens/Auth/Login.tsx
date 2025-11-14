@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView, WebViewNavigation } from 'react-native-webview';
+import { Buffer } from 'buffer';
 import { API_CONFIG } from '../../../config/api';
 import { api } from '../../../services/api';
 import { UserService } from '../../../services/userService';
@@ -40,6 +41,27 @@ const GOAL_OPTIONS: Array<{ label: string; value: GoalType }> = [
 
 const HEALTH_INFO_FLAG_PREFIX = '@healthInfoInitialized';
 const SOCIAL_PROVIDERS: Array<'kakao' | 'naver'> = ['kakao', 'naver'];
+
+function decodeJwtPayload(token: string | null | undefined): Record<string, any> | null {
+  if (!token || typeof token !== 'string') {
+    return null;
+  }
+
+  const segments = token.split('.');
+  if (segments.length < 2) {
+    return null;
+  }
+
+  try {
+    const base = segments[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base.padEnd(Math.ceil(base.length / 4) * 4, '=');
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+    return JSON.parse(decoded);
+  } catch (error) {
+    console.error('JWT 디코딩 실패:', error);
+    return null;
+  }
+}
 
 interface LoginProps {
   onLoggedIn: () => void;
@@ -88,9 +110,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     })();
   }, []);
 
-  const ensureHealthInfoFlow = useCallback(async () => {
+  const ensureHealthInfoFlow = useCallback(async (overrideKey?: string) => {
+    const keyToCheck = overrideKey ?? healthFlagKey;
     try {
-      const initialized = await AsyncStorage.getItem(healthFlagKey);
+      const initialized = await AsyncStorage.getItem(keyToCheck);
       if (initialized === '1') {
         onLoggedIn();
         return;
@@ -110,23 +133,53 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       handledAuthRef.current = true;
 
       try {
+        setShowWebView(false);
+        setWebViewLoading(false);
+        setCurrentProvider(null);
+        setLoading(false);
+
+        let normalizedAccess: string | null = null;
+
         if (accessToken) {
-          const bearer = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
-          await api.setAuthToken(bearer);
-          await AsyncStorage.setItem('@accessToken', bearer.replace(/^Bearer\s+/i, ''));
+          normalizedAccess = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
+          await api.setAuthToken(normalizedAccess);
+          await AsyncStorage.setItem('@accessToken', normalizedAccess.replace(/^Bearer\s+/i, ''));
         }
         if (refreshToken) {
           await AsyncStorage.setItem('@refreshToken', refreshToken);
           await AsyncStorage.setItem('refreshToken', refreshToken);
         }
 
-        if (currentProviderRef.current) {
-          const snapshot = {
-            provider: currentProviderRef.current,
-            updatedAt: Date.now(),
-          };
-          await AsyncStorage.setItem('currentUser', JSON.stringify(snapshot));
-        }
+        const existingUserRaw = await AsyncStorage.getItem('currentUser');
+        const existingUser = existingUserRaw ? JSON.parse(existingUserRaw) : {};
+
+        const payload = decodeJwtPayload(accessToken);
+        const emailFromToken =
+          payload?.email ??
+          existingUser?.email ??
+          null;
+        const nameFromToken =
+          payload?.nickname ??
+          payload?.name ??
+          existingUser?.name ??
+          (emailFromToken ? emailFromToken.split('@')[0] : null);
+
+        const provider = currentProviderRef.current;
+        const userSnapshot = {
+          ...existingUser,
+          email: emailFromToken,
+          name: nameFromToken,
+          nickname: payload?.nickname ?? existingUser?.nickname ?? nameFromToken,
+          provider,
+          role: payload?.role ?? existingUser?.role ?? null,
+          loginAt: Date.now(),
+        };
+
+        await AsyncStorage.setItem('currentUser', JSON.stringify(userSnapshot));
+
+        const healthKey = makeHealthFlagKey(emailFromToken);
+        setHealthFlagKey(healthKey);
+        currentProviderRef.current = null;
 
         try {
           const recommendations = await getFoodRecommendations();
@@ -140,11 +193,7 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           );
         }
 
-        setShowWebView(false);
-        setWebViewLoading(false);
-        setCurrentProvider(null);
-        setLoading(false);
-        await ensureHealthInfoFlow();
+        await ensureHealthInfoFlow(healthKey);
       } catch (error) {
         handledAuthRef.current = false;
         throw error;
@@ -274,6 +323,24 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
       } catch (foodError) {
         console.error('식단 추천 요청 실패:', foodError);
+      }
+
+      try {
+        const currentUserRaw = await AsyncStorage.getItem('currentUser');
+        if (currentUserRaw) {
+          const parsed = JSON.parse(currentUserRaw);
+          const updatedUser = {
+            ...parsed,
+            healthInfo: {
+              height: heightValue,
+              weight: weightValue,
+              goal: healthGoal,
+            },
+          };
+          await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+        }
+      } catch (userUpdateError) {
+        console.error('헬스 정보 사용자 저장 실패:', userUpdateError);
       }
 
       await AsyncStorage.setItem(healthFlagKey, '1');

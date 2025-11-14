@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -54,11 +54,14 @@ export function Dashboard() {
   const [loadingDiet, setLoadingDiet] = useState(false);
   const [foodTotals, setFoodTotals] = useState({ calories: 0, protein: 0, carbs: 0, fat: 0 });
   const [weeklyCaloriesData, setWeeklyCaloriesData] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+  const [weeklyLabels, setWeeklyLabels] = useState<string[]>(['월', '화', '수', '목', '금', '토', '일']);
   const [weeklyAverageCalories, setWeeklyAverageCalories] = useState(0);
   const [loadingFoodStats, setLoadingFoodStats] = useState(false);
   
   // 중복 호출 방지 플래그
   const requestingExerciseRef = useRef(false);
+  const fallbackExerciseNoticeShown = useRef(false);
+  const fallbackDietNoticeShown = useRef(false);
   
   const today = new Date().toLocaleDateString('ko-KR', {
     year: 'numeric',
@@ -135,6 +138,23 @@ export function Dashboard() {
 
   const character = getCharacterState();
 
+  const weeklyChartData = useMemo(
+    () => ({
+      labels: weeklyLabels,
+      datasets: [
+        {
+          data: weeklyCaloriesData,
+        },
+      ],
+    }),
+    [weeklyCaloriesData, weeklyLabels]
+  );
+
+  const hasWeeklyData = useMemo(
+    () => weeklyCaloriesData.some((value) => value > 0),
+    [weeklyCaloriesData]
+  );
+
   const inBodyData = {
     weight: 69.5,
     muscleMass: 32.8,
@@ -142,13 +162,6 @@ export function Dashboard() {
     bmi: 24.1,
     lastUpdated: '2024-03-15 09:30',
     isConnected: true
-  };
-
-  const weeklyData = {
-    labels: ['월', '화', '수', '목', '금', '토', '일'],
-    datasets: [{
-      data: [1800, 2100, 1900, 2200, 1750, 2300, 1650]
-    }]
   };
 
   const weightData = {
@@ -186,10 +199,11 @@ export function Dashboard() {
         }
 
         const cachedWeekly = await readCachedWeeklyCalories();
-        if (cachedWeekly) {
-          setWeeklyCaloriesData(cachedWeekly.data);
-          setWeeklyAverageCalories(cachedWeekly.average);
-        }
+      if (cachedWeekly) {
+        setWeeklyLabels(cachedWeekly.labels);
+        setWeeklyCaloriesData(cachedWeekly.data);
+        setWeeklyAverageCalories(cachedWeekly.average);
+      }
       } catch {}
     })();
   }, []);
@@ -228,6 +242,7 @@ export function Dashboard() {
       if (weeklyRes.success && Array.isArray(weeklyRes.data)) {
         const normalizedWeekly = weeklyRes.data.map((item: any) => normalizeFoodApiItem(item));
         const summary = aggregateWeeklyCalories(normalizedWeekly);
+        setWeeklyLabels(summary.labels);
         setWeeklyCaloriesData(summary.data);
         setWeeklyAverageCalories(summary.average);
         await cacheWeeklyCalories(summary);
@@ -272,12 +287,17 @@ export function Dashboard() {
       const userInput = `집에서 할 수 있는 운동을 30분 동안 추천해줘.`;
       const level = 'INTERMEDIATE';
       
-      const response = await WorkoutService.getExerciseRecommendation(userInput, level);
-      
+      const response = await WorkoutService.getExerciseRecommendation(userInput, level, 'HOME_TRAINING');
+
+      if (response.meta?.usedFallback && !fallbackExerciseNoticeShown.current) {
+        fallbackExerciseNoticeShown.current = true;
+        Alert.alert('안내', 'AI 운동 추천 서버가 잠시 응답하지 않아 기본 루틴을 보여드려요.');
+      }
+
       if (response.success && response.data) {
-        const data = response.data.value || response.data;
-        if (data.exerciseInfoDto && Array.isArray(data.exerciseInfoDto)) {
-          const exercises: ExerciseRecommendation[] = data.exerciseInfoDto.map((item: any, index: number) => ({
+        const data = response.data;
+        if (Array.isArray(data)) {
+          const exercises: ExerciseRecommendation[] = data.map((item, index) => ({
             id: `exercise_${index}`,
             name: item.name || '추천 운동',
             description: item.description || 'AI 추천 운동',
@@ -290,6 +310,9 @@ export function Dashboard() {
         }
       } else {
         setExerciseRecommendations([]);
+        if (response.error) {
+          Alert.alert('알림', response.error);
+        }
       }
     } catch (error: any) {
       setExerciseRecommendations([]);
@@ -309,7 +332,12 @@ export function Dashboard() {
       }
       
       const user = JSON.parse(userStr);
-      const response = await FoodService.getFoodRecommendations(user.id || user.email);
+      const response = await FoodService.getFoodRecommendations();
+
+      if (response.meta?.usedFallback && !fallbackDietNoticeShown.current) {
+        fallbackDietNoticeShown.current = true;
+        Alert.alert('안내', 'AI 식단 추천 서버가 잠시 응답하지 않아 기본 식단을 보여드려요.');
+      }
       
       if (response.success && response.data) {
         const data = response.data.value || response.data;
@@ -329,6 +357,9 @@ export function Dashboard() {
         }
       } else {
         setDietRecommendations([]);
+        if (response.error || response.meta?.reason) {
+          Alert.alert('알림', response.error || response.meta?.reason || '식단 추천에 실패했습니다.');
+        }
       }
     } catch (error: any) {
       setDietRecommendations([]);
@@ -561,34 +592,46 @@ export function Dashboard() {
       <Card>
         <CardHeader title="주간 칼로리 현황" icon="trending-up" />
         <View style={styles.cardContent}>
-          <BarChart
-            data={weeklyData}
-            width={screenWidth - 64}
-            height={180}
-            yAxisLabel=""
-            yAxisSuffix=""
-            chartConfig={{
-              backgroundColor: '#ffffff',
-              backgroundGradientFrom: '#ffffff',
-              backgroundGradientTo: '#ffffff',
-              decimalPlaces: 0,
-              color: (opacity = 1) => `rgba(99, 102, 241, ${opacity})`,
-              labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
-              style: {
-                borderRadius: 8
-              },
-              propsForBackgroundLines: {
-                strokeDasharray: '',
-                stroke: '#e5e7eb',
-                strokeWidth: 1
-              }
-            }}
-            style={styles.chart}
-            showValuesOnTopOfBars={false}
-            withInnerLines={true}
-            fromZero={true}
-          />
-          <Text style={styles.chartCaption}>이번 주 평균: 1,957kcal</Text>
+          {hasWeeklyData ? (
+            <>
+              <BarChart
+                data={weeklyChartData}
+                width={screenWidth - 64}
+                height={180}
+                yAxisLabel=""
+                yAxisSuffix=""
+                chartConfig={{
+                  backgroundColor: '#ffffff',
+                  backgroundGradientFrom: '#ffffff',
+                  backgroundGradientTo: '#ffffff',
+                  decimalPlaces: 0,
+                  color: (opacity = 1) => `rgba(99, 102, 241, ${opacity})`,
+                  labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
+                  style: {
+                    borderRadius: 8,
+                  },
+                  propsForBackgroundLines: {
+                    strokeDasharray: '',
+                    stroke: '#e5e7eb',
+                    strokeWidth: 1,
+                  },
+                }}
+                style={styles.chart}
+                showValuesOnTopOfBars={false}
+                withInnerLines={true}
+                fromZero={true}
+              />
+              <Text style={styles.chartCaption}>
+                이번 주 평균: {weeklyAverageCalories.toLocaleString()}kcal
+              </Text>
+            </>
+          ) : (
+            <View style={styles.emptyContainer}>
+              <Icon name="bar-chart-2" size={32} color="#d1d5db" />
+              <Text style={styles.emptyText}>이번 주 데이터가 없습니다</Text>
+              <Text style={styles.emptySubtext}>식단을 기록하면 차트가 업데이트돼요</Text>
+            </View>
+          )}
         </View>
       </Card>
 

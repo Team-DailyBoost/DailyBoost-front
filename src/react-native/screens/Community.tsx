@@ -123,10 +123,11 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
     raw?.timestamp ??
     raw?.postedAt;
 
-  const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : new Date();
-  const createdAtIso = Number.isNaN(createdAtDate.getTime())
-    ? new Date().toISOString()
-    : createdAtDate.toISOString();
+  const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : null;
+  const createdAtIso =
+    createdAtDate && !Number.isNaN(createdAtDate.getTime())
+      ? createdAtDate.toISOString()
+      : null;
 
   const category =
     raw?.category ??
@@ -159,9 +160,9 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
     likes: Number(raw?.likes ?? raw?.likeCount ?? 0),
     likedBy: Array.isArray(raw?.likedBy) ? raw.likedBy.map((id: any) => String(id)) : [],
     comments: Number(raw?.comments ?? raw?.commentCount ?? 0),
-    createdAt: createdAtIso,
-    time: formatPostDate(createdAtIso),
-    displayDate: formatAbsoluteDate(createdAtIso),
+    createdAt: createdAtIso ?? (createdAtRaw ? String(createdAtRaw) : ''),
+    time: createdAtIso ? formatPostDate(createdAtIso) : '',
+    displayDate: createdAtIso ? formatAbsoluteDate(createdAtIso) : '',
     image: raw?.image ?? raw?.imageUrl ?? undefined,
   };
 };

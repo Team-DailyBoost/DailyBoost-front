@@ -1,6 +1,8 @@
 import { api, API_CONFIG } from './api';
 import { WebViewManager } from '../utils/webViewManager';
 import { getFoodRecommendations as fetchFoodRecommendations } from '../api/foods';
+import { FALLBACK_FOOD_RECOMMENDATIONS } from '../constants/fallbacks';
+import { ServiceResult } from '../types/service';
 
 /**
  * Food response interface (from backend)
@@ -112,7 +114,7 @@ export class FoodService {
    * 
    * Note: Requires authentication, no body needed
    */
-  static async getFoodRecommendations() {
+  static async getFoodRecommendations(): Promise<ServiceResult<FoodRecommendation[]>> {
     try {
       // 우리가 만든 client.ts 기반 API 사용
       const result = await fetchFoodRecommendations();
@@ -120,7 +122,7 @@ export class FoodService {
       return { 
         success: true, 
         data: result 
-      } as any;
+      };
     } catch (error: any) {
       console.error('식단 추천 오류:', error);
       
@@ -132,9 +134,18 @@ export class FoodService {
         };
       }
       
-      return { 
-        success: false, 
-        error: error.message || '식단 추천 실패' 
+      const reason = typeof error?.message === 'string' && error.message.trim().length > 0
+        ? error.message
+        : 'AI 식단 추천 서버가 응답하지 않습니다.';
+      console.warn('⚠️ 식단 추천 API 실패 - 기본 추천으로 대체:', reason);
+
+      return {
+        success: true,
+        data: FALLBACK_FOOD_RECOMMENDATIONS,
+        meta: {
+          usedFallback: true,
+          reason,
+        },
       };
     }
   }

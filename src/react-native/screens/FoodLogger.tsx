@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -74,8 +74,10 @@ export function FoodLogger() {
   const [recipeInput, setRecipeInput] = useState('');
   const [recommendedRecipes, setRecommendedRecipes] = useState<Recipe[]>([]);
   const [recommendedMeals, setRecommendedMeals] = useState<RecommendedMeal[]>([]);
+  const [isFallbackRecommendations, setIsFallbackRecommendations] = useState(false);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const recipeInputRef = useRef<TextInput>(null);
+  const fallbackFoodNoticeShown = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -163,14 +165,30 @@ export function FoodLogger() {
     loadTodayFoods({ syncWeekly: true });
   }, [loadTodayFoods]);
 
-  const currentTotals = todaysFoods.reduce(
-    (acc, entry) => ({
-      calories: acc.calories + entry.food.calories * entry.quantity,
-      protein: acc.protein + entry.food.protein * entry.quantity,
-      carbs: acc.carbs + entry.food.carbs * entry.quantity,
-      fat: acc.fat + entry.food.fat * entry.quantity,
-    }),
-    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  const computeTotals = useCallback((entries: FoodEntry[]) => {
+    return entries.reduce(
+      (acc, entry) => ({
+        calories: acc.calories + entry.food.calories * entry.quantity,
+        protein: acc.protein + entry.food.protein * entry.quantity,
+        carbs: acc.carbs + entry.food.carbs * entry.quantity,
+        fat: acc.fat + entry.food.fat * entry.quantity,
+      }),
+      { calories: 0, protein: 0, carbs: 0, fat: 0 }
+    );
+  }, []);
+
+  const cacheTotalsForEntries = useCallback(
+    (entries: FoodEntry[]) => {
+      const totals = computeTotals(entries);
+      cacheTodayTotals(totals);
+      return totals;
+    },
+    [computeTotals]
+  );
+
+  const currentTotals = useMemo(
+    () => computeTotals(todaysFoods),
+    [computeTotals, todaysFoods]
   );
 
   const mealTypeToFoodKind = (mealType: RecommendedMeal['mealType']): 'BREAKFAST' | 'LUNCH' | 'DINNER' => {
@@ -252,6 +270,20 @@ export function FoodLogger() {
       setProcessingMealId(processingKey);
 
       try {
+        if (isFallbackRecommendations) {
+          const entry = createLocalEntryFromRecommendation(meal);
+          setTodaysFoods(prev => {
+            const next = [entry, ...prev];
+            cacheTotalsForEntries(next);
+            return next;
+          });
+          Alert.alert(
+            '추가됨',
+            `${meal.name}을(를) 임시로 추가했습니다.\nAI 추천 서버가 복구되면 다시 시도해주세요.`
+          );
+          return;
+        }
+
         const resolvedId = await resolveFoodIdForRecommendation(meal);
 
         if (resolvedId) {
@@ -264,27 +296,33 @@ export function FoodLogger() {
           Alert.alert('추가됨', `${meal.name}이 식단에 추가되었습니다.`);
         } else {
           const entry = createLocalEntryFromRecommendation(meal);
-          setTodaysFoods(prev => [entry, ...prev]);
+          setTodaysFoods(prev => {
+            const next = [entry, ...prev];
+            cacheTotalsForEntries(next);
+            return next;
+          });
           Alert.alert(
             '로컬에 추가됨',
             `${meal.name}을(를) 임시로 추가했습니다.\n네트워크 연결 후 다시 시도하세요.`
           );
         }
       } catch (error: any) {
-        console.error('식단 추천 추가 실패:', error);
+        console.warn('식단 추천 추가 실패, 로컬 저장으로 대체:', error);
         const entry = createLocalEntryFromRecommendation(meal);
-        setTodaysFoods(prev => [entry, ...prev]);
+        setTodaysFoods(prev => {
+          const next = [entry, ...prev];
+          cacheTotalsForEntries(next);
+          return next;
+        });
         Alert.alert(
-          '오류',
-          error?.message
-            ? `${error.message}\n임시로 식단을 추가했습니다.`
-            : '식단을 추가하지 못했습니다. 잠시 후 다시 시도해주세요.'
+          '임시로 추가됨',
+          `${meal.name}을(를) 로컬에 저장했습니다.\nAI 서버가 복구되면 다시 시도해주세요.`
         );
       } finally {
         setProcessingMealId(null);
       }
     },
-    [loadTodayFoods, processingMealId, resolveFoodIdForRecommendation]
+    [cacheTotalsForEntries, isFallbackRecommendations, loadTodayFoods, processingMealId, resolveFoodIdForRecommendation]
   );
 
   const removeFoodEntry = useCallback(
@@ -303,11 +341,19 @@ export function FoodLogger() {
           await loadTodayFoods({ syncWeekly: true });
           Alert.alert('삭제됨', `${entry.food.name}을 제거했습니다.`);
         } else {
-          setTodaysFoods(prev => prev.filter(item => item.id !== entry.id));
+          setTodaysFoods(prev => {
+            const next = prev.filter(item => item.id !== entry.id);
+            cacheTotalsForEntries(next);
+            return next;
+          });
         }
       } catch (error: any) {
         console.error('식단 삭제 실패:', error);
-        setTodaysFoods(prev => prev.filter(item => item.id !== entry.id));
+        setTodaysFoods(prev => {
+          const next = prev.filter(item => item.id !== entry.id);
+          cacheTotalsForEntries(next);
+          return next;
+        });
         Alert.alert(
           '오류',
           error?.message
@@ -318,7 +364,7 @@ export function FoodLogger() {
         setProcessingMealId(null);
       }
     },
-    [loadTodayFoods, processingMealId]
+    [cacheTotalsForEntries, loadTodayFoods, processingMealId]
   );
 
   const searchRecipes = async () => {
@@ -387,6 +433,16 @@ export function FoodLogger() {
         : (response as any)?.data;
       const normalized = normalizeFoodRecommendations(rawData);
 
+      setIsFallbackRecommendations(Boolean(response.meta?.usedFallback));
+
+      if (response.meta?.usedFallback && !fallbackFoodNoticeShown.current) {
+        fallbackFoodNoticeShown.current = true;
+        Alert.alert(
+          '안내',
+          'AI 식단 추천 서버가 잠시 응답하지 않아 기본 추천을 보여드려요.'
+        );
+      }
+
       if (response.success) {
         setRecommendedMeals(normalized);
         await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
@@ -397,7 +453,7 @@ export function FoodLogger() {
           Alert.alert('알림', '추천할 식단이 없습니다. 헬스 정보를 다시 확인해주세요.');
         }
       } else {
-        Alert.alert('알림', response.error || '식단 추천에 실패했습니다.');
+        Alert.alert('알림', response.error || response.meta?.reason || '식단 추천에 실패했습니다.');
       }
     } catch (error: any) {
       console.error('식단 추천 오류:', error);

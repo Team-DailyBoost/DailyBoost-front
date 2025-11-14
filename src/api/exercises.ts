@@ -23,11 +23,15 @@ export interface ExerciseInfoDto {
 }
 
 /**
- * Exercise Recommendation 타입
- * Swagger 명세의 components.schemas.ExerciseRecommendation을 그대로 옮긴 것입니다.
+ * Exercise Recommendation 타입 (백엔드 반환 형식과 동일)
  */
-export interface ExerciseRecommendation {
-  exerciseInfoDto: ExerciseInfoDto[];
+export interface ExerciseRecommendationItem {
+  name: string;
+  description: string;
+  youtubeLink: string;
+  level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
+  part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';
+  duration?: number;
 }
 
 /**
@@ -37,27 +41,28 @@ export interface ExerciseRecommendation {
 export interface ExerciseRequest {
   userInput: string;
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
+  part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';
 }
 
 /**
  * 운동 추천
- * GET /api/recommend/exercise
+ * POST /api/exercise/recommend
  * 
  * Swagger 명세:
  * - operationId: recommendExercise
  * - requestBody: ExerciseRequest (required)
- * - response: ApiExerciseRecommendation (value는 ExerciseRecommendation)
+ * - response: Api<List<ExerciseRecommendation>>
  * 
- * 주의: 백엔드가 GET with @RequestBody를 사용하는 비표준 설계입니다.
- * HTTP 표준상 GET 요청에는 body를 보낼 수 없으므로, POST로 시도합니다.
+ * 백엔드가 POST를 사용하므로 그대로 호출합니다.
  */
 export async function getExerciseRecommendation(
   userInput: string,
-  level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER'
-): Promise<ExerciseRecommendation> {
-  const request: ExerciseRequest = { userInput, level };
+  level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER',
+  part: ExerciseRequest['part'] = 'HOME_TRAINING'
+): Promise<ExerciseRecommendationItem[]> {
+  const request: ExerciseRequest = { userInput, level, part };
 
-  return requestWithWebViewFallback<ExerciseRecommendation>('POST', '/api/recommend/exercise', {
+  return requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', '/api/exercise/recommend', {
     body: request,
   });
 }

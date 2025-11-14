@@ -41,6 +41,30 @@ const TIER_ICONS = {
   diamond: '👑',
 };
 
+type HealthGoal =
+  | 'WEIGHT_LOSS'
+  | 'MUSCLE_GAIN'
+  | 'STRENGTH_IMPROVEMENT'
+  | 'ENDURANCE_IMPROVEMENT'
+  | 'GENERAL_HEALTH_MAINTENANCE'
+  | 'BODY_SHAPE_MANAGEMENT';
+
+const HEALTH_GOAL_LABELS: Record<HealthGoal, string> = {
+  WEIGHT_LOSS: '체중 감량',
+  MUSCLE_GAIN: '근육 증가',
+  STRENGTH_IMPROVEMENT: '근력 향상',
+  ENDURANCE_IMPROVEMENT: '지구력 향상',
+  GENERAL_HEALTH_MAINTENANCE: '건강 유지',
+  BODY_SHAPE_MANAGEMENT: '체형 관리',
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  kakao: '카카오 로그인',
+  naver: '네이버 로그인',
+  google: '구글 로그인',
+  local: '이메일 로그인',
+};
+
 export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
   const [notifications, setNotifications] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
@@ -49,14 +73,15 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
   const [following, setFollowing] = useState(0);
   const [currentUser, setCurrentUser] = useState<any>({});
   const [profileImage, setProfileImage] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string>('user@example.com');
   const [showEditModal, setShowEditModal] = useState(false);
   const [editForm, setEditForm] = useState({
     name: '',
     age: '',
-    gender: 'male' as 'male' | 'female',
+    gender: 'MALE' as 'MALE' | 'FEMALE' | 'OTHER',
     height: '',
     weight: '',
-    goal: 'maintenance',
+    goal: 'GENERAL_HEALTH_MAINTENANCE' as HealthGoal,
   });
 
   useEffect(() => {
@@ -67,20 +92,26 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     try {
       const saved = await AsyncStorage.getItem('currentUser');
       const parsed = saved ? JSON.parse(saved) : null;
-      setCurrentUser(parsed || {});
+      let resolvedUser = parsed || {};
+
       // Try backend profile
       const profile = await UserService.getProfile();
       if (profile) {
-        setCurrentUser(profile);
-        await AsyncStorage.setItem('currentUser', JSON.stringify(profile));
+        resolvedUser = { ...resolvedUser, ...profile };
+        await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
       }
-      const userId = (profile?.email || parsed?.email) as string;
-      const progress = await AsyncStorage.getItem(`userProgress_${userId}`);
+      setCurrentUser(resolvedUser);
+
+      const resolvedUserId =
+        (resolvedUser?.email || parsed?.email || profile?.email || 'user@example.com') as string;
+      setUserId(resolvedUserId);
+
+      const progress = await AsyncStorage.getItem(`userProgress_${resolvedUserId}`);
       if (progress) {
         setUserProgress(JSON.parse(progress));
       }
 
-      const savedFollowing = await AsyncStorage.getItem(`following_${userId}`);
+      const savedFollowing = await AsyncStorage.getItem(`following_${resolvedUserId}`);
       if (savedFollowing) {
         const followingList = JSON.parse(savedFollowing);
         setFollowing(followingList.length);
@@ -89,11 +120,13 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       setFollowers(12);
 
       // 프로필 사진 로드
-      const savedProfileImage = await AsyncStorage.getItem(`profileImage_${userId}`);
+      const savedProfileImage = await AsyncStorage.getItem(`profileImage_${resolvedUserId}`);
       if (savedProfileImage) {
         setProfileImage(savedProfileImage);
-      } else if (parsed?.profileImage) {
-        setProfileImage(parsed.profileImage);
+      } else if (resolvedUser?.profileImage) {
+        setProfileImage(resolvedUser.profileImage);
+      } else if (resolvedUser?.profileImageUrl) {
+        setProfileImage(resolvedUser.profileImageUrl);
       }
     } catch (error) {
       console.error('Failed to load user data:', error);
@@ -170,13 +203,35 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     );
   };
 
-  const goalLabels: Record<string, string> = {
-    weightLoss: '체중 감량',
-    muscleGain: '근육 증가',
-    maintenance: '체중 유지',
-    fitness: '체력 향상',
-    health: '건강 관리',
-  };
+  const healthInfo = currentUser?.healthInfo ?? {};
+  const heightValue =
+    healthInfo?.height !== undefined && healthInfo?.height !== null
+      ? Number(healthInfo.height)
+      : currentUser?.height !== undefined && currentUser?.height !== null
+        ? Number(currentUser.height)
+        : null;
+  const weightValue =
+    healthInfo?.weight !== undefined && healthInfo?.weight !== null
+      ? Number(healthInfo.weight)
+      : currentUser?.weight !== undefined && currentUser?.weight !== null
+        ? Number(currentUser.weight)
+        : null;
+  const goalLabel =
+    healthInfo?.goal && HEALTH_GOAL_LABELS[healthInfo.goal as HealthGoal]
+      ? HEALTH_GOAL_LABELS[healthInfo.goal as HealthGoal]
+      : '-';
+  const genderLabel =
+    currentUser?.gender === 'MALE'
+      ? '남성'
+      : currentUser?.gender === 'FEMALE'
+        ? '여성'
+        : currentUser?.gender === 'OTHER'
+          ? '기타'
+          : '-';
+  const providerLabel =
+    currentUser?.provider && PROVIDER_LABELS[currentUser.provider]
+      ? PROVIDER_LABELS[currentUser.provider]
+      : null;
 
   return (
     <View style={styles.container}>
@@ -192,11 +247,11 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               // 프로필 수정 모달 열기
               setEditForm({
                 name: currentUser.name || '',
-                age: String(currentUser.age || ''),
-                gender: currentUser.gender || 'male',
-                height: String(currentUser.height || ''),
-                weight: String(currentUser.weight || ''),
-                goal: currentUser.goal || 'maintenance',
+                age: currentUser.age ? String(currentUser.age) : '',
+                gender: (currentUser.gender as 'MALE' | 'FEMALE' | 'OTHER') || 'MALE',
+                height: heightValue !== null ? String(heightValue) : '',
+                weight: weightValue !== null ? String(weightValue) : '',
+                goal: (healthInfo?.goal as HealthGoal) || 'GENERAL_HEALTH_MAINTENANCE',
               });
               setShowEditModal(true);
             }}
@@ -224,7 +279,10 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
             </TouchableOpacity>
             <View style={styles.profileInfo}>
               <View style={styles.nameRow}>
-                <Text style={styles.name}>{currentUser.name}</Text>
+                <Text style={styles.name}>{currentUser.name || currentUser.nickname || '-'}</Text>
+                {providerLabel && (
+                  <Badge>{providerLabel}</Badge>
+                )}
                 {userProgress && (
                   <View style={styles.tierBadge}>
                     <Text style={styles.tierIcon}>
@@ -236,7 +294,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                   </View>
                 )}
               </View>
-              <Text style={styles.email}>{currentUser.email}</Text>
+              <Text style={styles.email}>{currentUser.email || '-'}</Text>
               {userProgress && (
                 <Text style={styles.exp}>
                   {userProgress.exp.toLocaleString()} EXP
@@ -250,29 +308,31 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
           <View style={styles.statsGrid}>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>나이</Text>
-              <Text style={styles.statValue}>{currentUser.age}세</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>성별</Text>
               <Text style={styles.statValue}>
-                {currentUser.gender === 'male' ? '남성' : '여성'}
+                {currentUser.age ? `${currentUser.age}세` : '-'}
               </Text>
             </View>
             <View style={styles.statItem}>
+              <Text style={styles.statLabel}>성별</Text>
+              <Text style={styles.statValue}>{genderLabel}</Text>
+            </View>
+            <View style={styles.statItem}>
               <Text style={styles.statLabel}>키</Text>
-              <Text style={styles.statValue}>{currentUser.height}cm</Text>
+              <Text style={styles.statValue}>
+                {heightValue !== null && !Number.isNaN(heightValue) ? `${heightValue}cm` : '-'}
+              </Text>
             </View>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>몸무게</Text>
-              <Text style={styles.statValue}>{currentUser.weight}kg</Text>
+              <Text style={styles.statValue}>
+                {weightValue !== null && !Number.isNaN(weightValue) ? `${weightValue}kg` : '-'}
+              </Text>
             </View>
           </View>
 
           <View style={styles.goalSection}>
             <Text style={styles.goalLabel}>운동 목표</Text>
-            <Text style={styles.goalValue}>
-              {goalLabels[currentUser.goal] || '-'}
-            </Text>
+            <Text style={styles.goalValue}>{goalLabel}</Text>
           </View>
 
           <View style={styles.divider} />
@@ -397,14 +457,14 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               <TouchableOpacity
                 style={[
                   styles.genderButton,
-                  editForm.gender === 'male' && styles.genderButtonActive,
+                  editForm.gender === 'MALE' && styles.genderButtonActive,
                 ]}
-                onPress={() => setEditForm({ ...editForm, gender: 'male' })}
+                onPress={() => setEditForm({ ...editForm, gender: 'MALE' })}
               >
                 <Text
                   style={[
                     styles.genderButtonText,
-                    editForm.gender === 'male' && styles.genderButtonTextActive,
+                    editForm.gender === 'MALE' && styles.genderButtonTextActive,
                   ]}
                 >
                   남성
@@ -413,14 +473,14 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               <TouchableOpacity
                 style={[
                   styles.genderButton,
-                  editForm.gender === 'female' && styles.genderButtonActive,
+                  editForm.gender === 'FEMALE' && styles.genderButtonActive,
                 ]}
-                onPress={() => setEditForm({ ...editForm, gender: 'female' })}
+                onPress={() => setEditForm({ ...editForm, gender: 'FEMALE' })}
               >
                 <Text
                   style={[
                     styles.genderButtonText,
-                    editForm.gender === 'female' && styles.genderButtonTextActive,
+                    editForm.gender === 'FEMALE' && styles.genderButtonTextActive,
                   ]}
                 >
                   여성
@@ -453,14 +513,14 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
 
             <Text style={styles.modalLabel}>운동 목표</Text>
             <View style={styles.goalButtons}>
-              {Object.entries(goalLabels).map(([key, label]) => (
+              {Object.entries(HEALTH_GOAL_LABELS).map(([key, label]) => (
                 <TouchableOpacity
                   key={key}
                   style={[
                     styles.goalButton,
                     editForm.goal === key && styles.goalButtonActive,
                   ]}
-                  onPress={() => setEditForm({ ...editForm, goal: key })}
+                  onPress={() => setEditForm({ ...editForm, goal: key as HealthGoal })}
                 >
                   <Text
                     style={[
@@ -488,19 +548,42 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                     return;
                   }
                   
+                  const parsedAge = editForm.age.trim().length > 0 ? String(parseInt(editForm.age, 10)) : undefined;
+                  const parsedHeight =
+                    editForm.height.trim().length > 0 && !Number.isNaN(Number(editForm.height))
+                      ? Number(editForm.height)
+                      : heightValue ?? undefined;
+                  const parsedWeight =
+                    editForm.weight.trim().length > 0 && !Number.isNaN(Number(editForm.weight))
+                      ? Number(editForm.weight)
+                      : weightValue ?? undefined;
+
+                  const updatePayload = {
+                    age: parsedAge,
+                    gender: editForm.gender,
+                    healthInfo: {
+                      height: parsedHeight,
+                      weight: parsedWeight,
+                      goal: editForm.goal,
+                    },
+                  };
+
                   const updatedUser = {
                     ...currentUser,
                     name: editForm.name,
-                    age: parseInt(editForm.age) || currentUser.age,
+                    age: parsedAge ?? currentUser.age,
                     gender: editForm.gender,
-                    height: parseFloat(editForm.height) || currentUser.height,
-                    weight: parseFloat(editForm.weight) || currentUser.weight,
-                    goal: editForm.goal,
+                    healthInfo: {
+                      ...healthInfo,
+                      height: parsedHeight,
+                      weight: parsedWeight,
+                      goal: editForm.goal,
+                    },
                   };
                   
                   try {
                     // 백엔드에 프로필 업데이트 요청
-                    await UserService.updateProfile(updatedUser);
+                    await UserService.updateProfile(updatePayload);
                     setCurrentUser(updatedUser);
                     await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
                     Alert.alert('완료', '프로필이 수정되었습니다');
