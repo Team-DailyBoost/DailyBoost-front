@@ -1,6 +1,10 @@
 import { getApiUrl, API_CONFIG } from '../config/api';
 export { API_CONFIG } from '../config/api';
 
+const ACCESS_TOKEN_KEYS = ['@accessToken', 'authToken'] as const;
+const REFRESH_TOKEN_KEYS = ['@refreshToken', 'refreshToken'] as const;
+const SESSION_COOKIE_KEYS = ['@sessionCookie', 'JSESSIONID'] as const;
+
 /**
  * API Response wrapper
  */
@@ -27,10 +31,16 @@ class ApiClient {
   private async getToken(): Promise<string | null> {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      return await AsyncStorage.getItem('authToken');
-      } catch (error) {
-        return null;
+      for (const key of ACCESS_TOKEN_KEYS) {
+        const value = await AsyncStorage.getItem(key);
+        if (value && value.trim().length > 0) {
+          return value;
+        }
       }
+      return null;
+    } catch (error) {
+      return null;
+    }
   }
   
   /**
@@ -39,10 +49,10 @@ class ApiClient {
   private async setToken(token: string): Promise<void> {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.setItem('authToken', token);
-      } catch (error) {
-        // Ignore error
-      }
+      await Promise.all(ACCESS_TOKEN_KEYS.map((key) => AsyncStorage.setItem(key, token)));
+    } catch (error) {
+      // Ignore error
+    }
   }
   
   /**
@@ -51,10 +61,22 @@ class ApiClient {
   private async removeToken(): Promise<void> {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.removeItem('authToken');
-      } catch (error) {
-        // Ignore error
-      }
+      await Promise.all(ACCESS_TOKEN_KEYS.map((key) => AsyncStorage.removeItem(key)));
+    } catch (error) {
+      // Ignore error
+    }
+  }
+
+  /**
+   * Remove refresh token from storage
+   */
+  private async removeRefreshToken(): Promise<void> {
+    try {
+      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+      await Promise.all(REFRESH_TOKEN_KEYS.map((key) => AsyncStorage.removeItem(key)));
+    } catch (error) {
+      // Ignore error
+    }
   }
   
   /**
@@ -63,11 +85,16 @@ class ApiClient {
   private async getSessionCookie(): Promise<string | null> {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      const cookie = await AsyncStorage.getItem('JSESSIONID');
-      return cookie;
-      } catch (error) {
-        return null;
+      for (const key of SESSION_COOKIE_KEYS) {
+        const cookie = await AsyncStorage.getItem(key);
+        if (cookie && cookie.trim().length > 0) {
+          return cookie;
+        }
       }
+      return null;
+    } catch (error) {
+      return null;
+    }
   }
   
   /**
@@ -78,10 +105,10 @@ class ApiClient {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
       // JSESSIONID=ABC123 형식에서 값만 추출
       const sessionId = cookie.includes('=') ? cookie.split('=')[1].split(';')[0] : cookie;
-      await AsyncStorage.setItem('JSESSIONID', sessionId);
-      } catch (error) {
-        // Ignore error
-      }
+      await Promise.all(SESSION_COOKIE_KEYS.map((key) => AsyncStorage.setItem(key, sessionId)));
+    } catch (error) {
+      // Ignore error
+    }
   }
   
   /**
@@ -90,10 +117,10 @@ class ApiClient {
   private async removeSessionCookie(): Promise<void> {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.removeItem('JSESSIONID');
-      } catch (error) {
-        // Ignore error
-      }
+      await Promise.all(SESSION_COOKIE_KEYS.map((key) => AsyncStorage.removeItem(key)));
+    } catch (error) {
+      // Ignore error
+    }
   }
   
   
@@ -193,7 +220,9 @@ class ApiClient {
         if (refreshToken) {
           try {
             const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-            await AsyncStorage.setItem('refreshToken', refreshToken);
+            await Promise.all(
+              REFRESH_TOKEN_KEYS.map((key) => AsyncStorage.setItem(key, refreshToken))
+            );
             console.log('✅ 응답에서 Refresh Token 수신');
           } catch (error) {
             // Ignore error
@@ -474,6 +503,7 @@ class ApiClient {
    */
   async clearAuthToken(): Promise<void> {
     await this.removeToken();
+    await this.removeRefreshToken();
     await this.removeSessionCookie();
   }
   

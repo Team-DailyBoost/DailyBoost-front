@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,23 +7,35 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
-  Keyboard,
   ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather as Icon } from '@expo/vector-icons';
 import { ProgressBar } from '../components/ProgressBar';
 import { FoodService } from '../../services/foodService';
+import { normalizeFoodRecommendations, NormalizedFoodRecommendation } from '../../utils/foodRecommendation';
+import {
+  aggregateDailyTotals,
+  aggregateWeeklyCalories,
+  buildMealTimeLabel,
+  cacheTodayTotals,
+  cacheWeeklyCalories,
+  normalizeFoodApiItem,
+  NormalizedFoodLog,
+} from '../../utils/foodStats';
 
 // Types
 interface Food {
   id: string;
+  apiId: number | null;
   name: string;
   calories: number;
   protein: number;
   carbs: number;
   fat: number;
   serving: string;
+  foodKind?: string | null;
+  registeredAt?: string | null;
 }
 
 interface FoodEntry {
@@ -31,6 +43,7 @@ interface FoodEntry {
   food: Food;
   quantity: number;
   time: string;
+  source?: 'backend' | 'local';
 }
 
 interface Recipe {
@@ -42,103 +55,113 @@ interface Recipe {
   difficulty: string;
 }
 
-interface RecommendedMeal {
-  id: string;
-  mealType: 'breakfast' | 'lunch' | 'dinner';
-  name: string;
-  description: string;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-}
-
-// Sample Data
-const SAMPLE_RECIPES: Recipe[] = [
-  {
-    id: '1',
-    name: '닭가슴살 샐러드',
-    ingredients: ['닭가슴살 150g', '양상추', '토마토', '오이', '견과류'],
-    calories: 350,
-    time: 15,
-    difficulty: '쉬움',
-  },
-  {
-    id: '2',
-    name: '고구마 샐러드',
-    ingredients: ['고구마 200g', '양파', '올리브오일', '베이비채소'],
-    calories: 280,
-    time: 20,
-    difficulty: '쉬움',
-  },
-  {
-    id: '3',
-    name: '연어 구이',
-    ingredients: ['연어 150g', '레몬', '허브', '올리브오일'],
-    calories: 420,
-    time: 25,
-    difficulty: '중간',
-  },
-  {
-    id: '4',
-    name: '계란찜',
-    ingredients: ['계란 3개', '우유', '파', '버터'],
-    calories: 250,
-    time: 10,
-    difficulty: '쉬움',
-  },
-];
-
-const RECOMMENDED_MEALS: RecommendedMeal[] = [
-  {
-    id: '1',
-    mealType: 'breakfast',
-    name: '계란 2개 + 현미밥 1공기',
-    description: '🌅 아침',
-    calories: 455,
-    protein: 29,
-    carbs: 35,
-    fat: 15,
-  },
-  {
-    id: '2',
-    mealType: 'lunch',
-    name: '닭가슴살 150g + 고구마 200g',
-    description: '🌞 점심',
-    calories: 420,
-    protein: 47,
-    carbs: 40,
-    fat: 5,
-  },
-  {
-    id: '3',
-    mealType: 'dinner',
-    name: '연어 구이 + 샐러드',
-    description: '🌙 저녁',
-    calories: 350,
-    protein: 33,
-    carbs: 12,
-    fat: 18,
-  },
-];
+type RecommendedMeal = NormalizedFoodRecommendation;
 
 type TabType = 'record' | 'track' | 'recommend' | 'ai';
+
+const DAILY_GOAL = {
+  calories: 2000,
+  protein: 120,
+  carbs: 250,
+  fat: 67,
+};
 
 export function FoodLogger() {
   const [activeTab, setActiveTab] = useState<TabType>('record');
   const [todaysFoods, setTodaysFoods] = useState<FoodEntry[]>([]);
+  const [loadingTodayFoods, setLoadingTodayFoods] = useState(false);
+  const [processingMealId, setProcessingMealId] = useState<string | null>(null);
   const [recipeInput, setRecipeInput] = useState('');
   const [recommendedRecipes, setRecommendedRecipes] = useState<Recipe[]>([]);
-  const [recommendedMeals, setRecommendedMeals] = useState<RecommendedMeal[]>(RECOMMENDED_MEALS);
+  const [recommendedMeals, setRecommendedMeals] = useState<RecommendedMeal[]>([]);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const recipeInputRef = useRef<TextInput>(null);
 
-  const dailyGoals = {
-    calories: 2000,
-    protein: 120,
-    carbs: 250,
-    fat: 67,
-  };
+  useEffect(() => {
+    (async () => {
+      try {
+        const cached = await AsyncStorage.getItem('@foodRecommendations');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          const normalized = normalizeFoodRecommendations(parsed);
+          if (normalized.length > 0) {
+            setRecommendedMeals(normalized);
+          }
+        }
+      } catch (error) {
+        console.log('⚠️ 로컬 식단 추천 로드 실패:', error);
+      }
+    })();
+  }, []);
+
+  const convertFoodLogToEntry = useCallback((log: NormalizedFoodLog): FoodEntry => {
+    const fallbackId = `${log.id ?? Date.now()}`;
+    const food: Food = {
+      id: String(log.id ?? fallbackId),
+      apiId: log.id,
+      name: log.name,
+      calories: log.calories,
+      protein: log.protein,
+      carbs: log.carbs,
+      fat: log.fat,
+      serving: '1식',
+      foodKind: log.foodKind,
+      registeredAt: log.registeredAt,
+    };
+
+    return {
+      id: `entry_${food.id}_${log.registeredAt ?? 'today'}`,
+      food,
+      quantity: 1,
+      time: buildMealTimeLabel(log.foodKind, log.registeredAt),
+      source: 'backend',
+    };
+  }, []);
+
+  const refreshWeeklyCalories = useCallback(async () => {
+    try {
+      const res = await FoodService.getWeeklyFoodLogs();
+      if (res.success && Array.isArray(res.data)) {
+        const normalized = res.data.map((item: any) => normalizeFoodApiItem(item));
+        const summary = aggregateWeeklyCalories(normalized);
+        await cacheWeeklyCalories(summary);
+      }
+    } catch (error) {
+      console.log('⚠️ 주간 식단 데이터 동기화 실패:', error);
+    }
+  }, []);
+
+  const loadTodayFoods = useCallback(
+    async ({ syncWeekly = false }: { syncWeekly?: boolean } = {}) => {
+      setLoadingTodayFoods(true);
+      try {
+        const res = await FoodService.getTodayFoodLogs();
+        if (res.success && Array.isArray(res.data)) {
+          const normalized = res.data.map((item: any) => normalizeFoodApiItem(item));
+          const entries = normalized.map(convertFoodLogToEntry);
+          setTodaysFoods(entries);
+          const totals = aggregateDailyTotals(normalized);
+          await cacheTodayTotals(totals);
+        } else {
+          setTodaysFoods([]);
+        }
+
+        if (syncWeekly) {
+          await refreshWeeklyCalories();
+        }
+      } catch (error) {
+        console.log('⚠️ 오늘 식단 로드 실패:', error);
+        setTodaysFoods([]);
+      } finally {
+        setLoadingTodayFoods(false);
+      }
+    },
+    [convertFoodLogToEntry, refreshWeeklyCalories]
+  );
+
+  useEffect(() => {
+    loadTodayFoods({ syncWeekly: true });
+  }, [loadTodayFoods]);
 
   const currentTotals = todaysFoods.reduce(
     (acc, entry) => ({
@@ -150,32 +173,153 @@ export function FoodLogger() {
     { calories: 0, protein: 0, carbs: 0, fat: 0 }
   );
 
-  const addRecommendedMeal = (meal: RecommendedMeal) => {
-    // RecommendedMeal을 Food 형식으로 변환
+  const mealTypeToFoodKind = (mealType: RecommendedMeal['mealType']): 'BREAKFAST' | 'LUNCH' | 'DINNER' => {
+    switch (mealType) {
+      case 'breakfast':
+        return 'BREAKFAST';
+      case 'lunch':
+        return 'LUNCH';
+      default:
+        return 'DINNER';
+    }
+  };
+
+  const createLocalEntryFromRecommendation = (meal: RecommendedMeal): FoodEntry => {
+    const foodKind = mealTypeToFoodKind(meal.mealType);
+    const localId = `${Date.now()}_${meal.id}`;
+
     const food: Food = {
-      id: meal.id,
+      id: localId,
+      apiId: null,
       name: meal.name,
       calories: meal.calories,
       protein: meal.protein,
       carbs: meal.carbs,
       fat: meal.fat,
       serving: '1식',
+      foodKind,
+      registeredAt: new Date().toISOString(),
     };
-    
-    const entry: FoodEntry = {
-      id: Date.now().toString(),
+
+    return {
+      id: `local_${localId}`,
       food,
       quantity: 1,
-      time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+      time: buildMealTimeLabel(foodKind, food.registeredAt),
+      source: 'local',
     };
-    
-    setTodaysFoods([...todaysFoods, entry]);
-    Alert.alert('추가됨', `${meal.name}이 추가되었습니다.`);
   };
 
-  const removeFood = (id: string) => {
-    setTodaysFoods(todaysFoods.filter((entry) => entry.id !== id));
-  };
+  const resolveFoodIdForRecommendation = useCallback(async (meal: RecommendedMeal): Promise<number | null> => {
+    const numericId = Number(meal.id);
+    if (Number.isFinite(numericId) && numericId > 0) {
+      return numericId;
+    }
+
+    try {
+      const res = await FoodService.searchFood(meal.name);
+      if (res.success && Array.isArray(res.data)) {
+        const normalized = res.data.map((item: any) => normalizeFoodApiItem(item));
+        const desiredKind = mealTypeToFoodKind(meal.mealType);
+
+        const exactMatch = normalized.find(
+          log => log.name === meal.name && (log.foodKind ?? '').toUpperCase() === desiredKind
+        );
+
+        if (exactMatch?.id) {
+          return exactMatch.id;
+        }
+
+        const fallback = normalized.find(log => Boolean(log.id));
+        if (fallback?.id) {
+          return fallback.id;
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ 식단 추천 ID 확인 실패:', error);
+    }
+
+    return null;
+  }, []);
+
+  const handleAddRecommendedMeal = useCallback(
+    async (meal: RecommendedMeal) => {
+      if (processingMealId) {
+        return;
+      }
+
+      const processingKey = meal.id || meal.name;
+      setProcessingMealId(processingKey);
+
+      try {
+        const resolvedId = await resolveFoodIdForRecommendation(meal);
+
+        if (resolvedId) {
+          const res = await FoodService.registerFood(resolvedId);
+          if (!res.success) {
+            throw new Error(res.error || '식단을 등록하지 못했습니다.');
+          }
+
+          await loadTodayFoods({ syncWeekly: true });
+          Alert.alert('추가됨', `${meal.name}이 식단에 추가되었습니다.`);
+        } else {
+          const entry = createLocalEntryFromRecommendation(meal);
+          setTodaysFoods(prev => [entry, ...prev]);
+          Alert.alert(
+            '로컬에 추가됨',
+            `${meal.name}을(를) 임시로 추가했습니다.\n네트워크 연결 후 다시 시도하세요.`
+          );
+        }
+      } catch (error: any) {
+        console.error('식단 추천 추가 실패:', error);
+        const entry = createLocalEntryFromRecommendation(meal);
+        setTodaysFoods(prev => [entry, ...prev]);
+        Alert.alert(
+          '오류',
+          error?.message
+            ? `${error.message}\n임시로 식단을 추가했습니다.`
+            : '식단을 추가하지 못했습니다. 잠시 후 다시 시도해주세요.'
+        );
+      } finally {
+        setProcessingMealId(null);
+      }
+    },
+    [loadTodayFoods, processingMealId, resolveFoodIdForRecommendation]
+  );
+
+  const removeFoodEntry = useCallback(
+    async (entry: FoodEntry) => {
+      if (processingMealId) {
+        return;
+      }
+
+      setProcessingMealId(entry.id);
+      try {
+        if (entry.food.apiId) {
+          const res = await FoodService.unregisterFood(entry.food.apiId);
+          if (!res.success) {
+            throw new Error(res.error || '식단을 삭제하지 못했습니다.');
+          }
+          await loadTodayFoods({ syncWeekly: true });
+          Alert.alert('삭제됨', `${entry.food.name}을 제거했습니다.`);
+        } else {
+          setTodaysFoods(prev => prev.filter(item => item.id !== entry.id));
+        }
+      } catch (error: any) {
+        console.error('식단 삭제 실패:', error);
+        setTodaysFoods(prev => prev.filter(item => item.id !== entry.id));
+        Alert.alert(
+          '오류',
+          error?.message
+            ? `${error.message}\n로컬 데이터에서만 제거했습니다.`
+            : '식단을 삭제하지 못했습니다. 잠시 후 다시 시도해주세요.'
+        );
+      } finally {
+        setProcessingMealId(null);
+      }
+    },
+    [loadTodayFoods, processingMealId]
+  );
 
   const searchRecipes = async () => {
     if (!recipeInput.trim()) {
@@ -226,35 +370,31 @@ export function FoodLogger() {
   const loadFoodRecommendations = async () => {
     setLoadingRecommendations(true);
     try {
-      // 실제 API 호출 (123 123 로그인 포함)
       const userStr = await AsyncStorage.getItem('currentUser');
-      if (!userStr) {
+      const accessToken = await AsyncStorage.getItem('@accessToken');
+      const sessionCookie = await AsyncStorage.getItem('@sessionCookie');
+      const hasAuthSession = Boolean(accessToken?.trim() || sessionCookie?.trim());
+
+      if (!userStr && !hasAuthSession) {
         Alert.alert('알림', '로그인이 필요합니다.');
+        setLoadingRecommendations(false);
         return;
       }
-      
-      const user = JSON.parse(userStr);
-      const response = await FoodService.getFoodRecommendations(user.id || user.email);
-      
-      if (response.success && response.data) {
-        const data = response.data.value || response.data;
-        if (Array.isArray(data) && data.length > 0) {
-          const meals: RecommendedMeal[] = data.map((item: any, index: number) => ({
-            id: item.id || index.toString(),
-            mealType: item.foodKind === 'BREAKFAST' ? 'breakfast' : 
-                     item.foodKind === 'LUNCH' ? 'lunch' : 'dinner',
-            name: item.name || '추천 식단',
-            description: item.foodKind === 'BREAKFAST' ? '🌅 아침' :
-                        item.foodKind === 'LUNCH' ? '🌞 점심' : '🌙 저녁',
-            calories: parseInt(item.calory) || 0,
-            protein: parseInt(item.protein) || 0,
-            carbs: parseInt(item.carbohydrate) || 0,
-            fat: parseInt(item.fat) || 0,
-          }));
-          setRecommendedMeals(meals);
+
+      const response = await FoodService.getFoodRecommendations();
+      const rawData = Array.isArray((response as any)?.data?.value)
+        ? (response as any).data.value
+        : (response as any)?.data;
+      const normalized = normalizeFoodRecommendations(rawData);
+
+      if (response.success) {
+        setRecommendedMeals(normalized);
+        await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
+
+        if (normalized.length > 0) {
           Alert.alert('성공', '식단 추천을 받았습니다!');
         } else {
-          Alert.alert('알림', '추천할 식단이 없습니다.');
+          Alert.alert('알림', '추천할 식단이 없습니다. 헬스 정보를 다시 확인해주세요.');
         }
       } else {
         Alert.alert('알림', response.error || '식단 추천에 실패했습니다.');
@@ -281,10 +421,10 @@ export function FoodLogger() {
               {Math.round(currentTotals.calories)}
               <Text style={styles.totalCalorieUnit}>kcal</Text>
             </Text>
-            <Text style={styles.totalCalorieGoal}>/ {dailyGoals.calories}kcal</Text>
+            <Text style={styles.totalCalorieGoal}>/ {DAILY_GOAL.calories}kcal</Text>
           </View>
           <ProgressBar
-            progress={Math.min((currentTotals.calories / dailyGoals.calories) * 100, 100)}
+            progress={Math.min((currentTotals.calories / DAILY_GOAL.calories) * 100, 100)}
           />
         </View>
       </View>
@@ -296,7 +436,12 @@ export function FoodLogger() {
           <Text style={styles.cardSubtitle}>{todaysFoods.length}개</Text>
         </View>
         <View style={styles.cardContent}>
-          {todaysFoods.length === 0 ? (
+          {loadingTodayFoods ? (
+            <View style={styles.loadingState}>
+              <ActivityIndicator size="small" color="#6366f1" />
+              <Text style={styles.loadingText}>식단을 불러오는 중입니다...</Text>
+            </View>
+          ) : todaysFoods.length === 0 ? (
             <View style={styles.emptyState}>
               <Icon name="coffee" size={48} color="#E0E0E0" />
               <Text style={styles.emptyText}>아직 기록된 음식이 없습니다</Text>
@@ -315,8 +460,15 @@ export function FoodLogger() {
                     {Math.round(entry.food.fat * entry.quantity)}g
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => removeFood(entry.id)}>
-                  <Icon name="trash-2" size={18} color="#2B2B2B" />
+                <TouchableOpacity
+                  onPress={() => removeFoodEntry(entry)}
+                  disabled={processingMealId === entry.id}
+                >
+                  {processingMealId === entry.id ? (
+                    <ActivityIndicator size="small" color="#2B2B2B" />
+                  ) : (
+                    <Icon name="trash-2" size={18} color="#2B2B2B" />
+                  )}
                 </TouchableOpacity>
               </View>
             ))
@@ -346,10 +498,10 @@ export function FoodLogger() {
               {Math.round(currentTotals.calories)}
               <Text style={styles.calorieUnit}>kcal</Text>
             </Text>
-            <Text style={styles.calorieGoal}>/ {dailyGoals.calories}kcal</Text>
+            <Text style={styles.calorieGoal}>/ {DAILY_GOAL.calories}kcal</Text>
           </View>
           <ProgressBar
-            progress={Math.min((currentTotals.calories / dailyGoals.calories) * 100, 100)}
+            progress={Math.min((currentTotals.calories / DAILY_GOAL.calories) * 100, 100)}
           />
 
           {/* Macro Nutrients */}
@@ -360,10 +512,10 @@ export function FoodLogger() {
                 <Text style={styles.macroLabel}>단백질</Text>
               </View>
               <Text style={styles.macroValue}>
-                {Math.round(currentTotals.protein)}g / {dailyGoals.protein}g
+                {Math.round(currentTotals.protein)}g / {DAILY_GOAL.protein}g
               </Text>
               <ProgressBar
-                progress={Math.min((currentTotals.protein / dailyGoals.protein) * 100, 100)}
+                progress={Math.min((currentTotals.protein / DAILY_GOAL.protein) * 100, 100)}
                 color="#4CAF50"
               />
             </View>
@@ -374,10 +526,10 @@ export function FoodLogger() {
                 <Text style={styles.macroLabel}>탄수화물</Text>
               </View>
               <Text style={styles.macroValue}>
-                {Math.round(currentTotals.carbs)}g / {dailyGoals.carbs}g
+                {Math.round(currentTotals.carbs)}g / {DAILY_GOAL.carbs}g
               </Text>
               <ProgressBar
-                progress={Math.min((currentTotals.carbs / dailyGoals.carbs) * 100, 100)}
+                progress={Math.min((currentTotals.carbs / DAILY_GOAL.carbs) * 100, 100)}
                 color="#2196F3"
               />
             </View>
@@ -388,10 +540,10 @@ export function FoodLogger() {
                 <Text style={styles.macroLabel}>지방</Text>
               </View>
               <Text style={styles.macroValue}>
-                {Math.round(currentTotals.fat)}g / {dailyGoals.fat}g
+                {Math.round(currentTotals.fat)}g / {DAILY_GOAL.fat}g
               </Text>
               <ProgressBar
-                progress={Math.min((currentTotals.fat / dailyGoals.fat) * 100, 100)}
+                progress={Math.min((currentTotals.fat / DAILY_GOAL.fat) * 100, 100)}
                 color="#FF9800"
               />
             </View>
@@ -455,33 +607,46 @@ export function FoodLogger() {
           </Text>
 
           <View style={styles.mealPlan}>
-            {recommendedMeals.map((meal) => (
-              <View key={meal.id} style={styles.mealSection}>
-                <Text style={styles.mealTitle}>{meal.description}</Text>
-                <Text style={styles.mealFood}>{meal.name}</Text>
-                <Text style={styles.mealCalories}>약 {meal.calories}kcal</Text>
-                <View style={styles.mealMacros}>
-                  <View style={styles.macroIndicator}>
-                    <View style={[styles.macroDotSmall, { backgroundColor: '#4CAF50' }]} />
-                    <Text style={styles.macroText}>P: {meal.protein}g</Text>
-                  </View>
-                  <View style={styles.macroIndicator}>
-                    <View style={[styles.macroDotSmall, { backgroundColor: '#2196F3' }]} />
-                    <Text style={styles.macroText}>C: {meal.carbs}g</Text>
-                  </View>
-                  <View style={styles.macroIndicator}>
-                    <View style={[styles.macroDotSmall, { backgroundColor: '#FF9800' }]} />
-                    <Text style={styles.macroText}>F: {meal.fat}g</Text>
-                  </View>
-                </View>
-                <TouchableOpacity
-                  style={styles.addMealButton}
-                  onPress={() => addRecommendedMeal(meal)}
-                >
-                  <Text style={styles.addMealButtonText}>+ 추가하기</Text>
-                </TouchableOpacity>
+            {recommendedMeals.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Icon name="clipboard" size={32} color="#D1D5DB" />
+                <Text style={styles.emptyText}>아직 추천된 식단이 없습니다</Text>
+                <Text style={styles.emptySubtext}>오른쪽 상단의 새로고침 버튼을 눌러 식단을 받아보세요</Text>
               </View>
-            ))}
+            ) : (
+              recommendedMeals.map((meal) => (
+                <View key={meal.id} style={styles.mealSection}>
+                  <Text style={styles.mealTitle}>{meal.description}</Text>
+                  <Text style={styles.mealFood}>{meal.name}</Text>
+                  <Text style={styles.mealCalories}>약 {meal.calories}kcal</Text>
+                  <View style={styles.mealMacros}>
+                    <View style={styles.macroIndicator}>
+                      <View style={[styles.macroDotSmall, { backgroundColor: '#4CAF50' }]} />
+                      <Text style={styles.macroText}>P: {meal.protein}g</Text>
+                    </View>
+                    <View style={styles.macroIndicator}>
+                      <View style={[styles.macroDotSmall, { backgroundColor: '#2196F3' }]} />
+                      <Text style={styles.macroText}>C: {meal.carbs}g</Text>
+                    </View>
+                    <View style={styles.macroIndicator}>
+                      <View style={[styles.macroDotSmall, { backgroundColor: '#FF9800' }]} />
+                      <Text style={styles.macroText}>F: {meal.fat}g</Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.addMealButton}
+                    onPress={() => handleAddRecommendedMeal(meal)}
+                    disabled={processingMealId === (meal.id || meal.name)}
+                  >
+                    {processingMealId === (meal.id || meal.name) ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.addMealButtonText}>+ 추가하기</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
           </View>
         </View>
       </View>
@@ -763,6 +928,16 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: 'center',
     paddingVertical: 40,
+  },
+  loadingState: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6366f1',
+    fontWeight: '600',
   },
   emptyText: {
     fontSize: 16,

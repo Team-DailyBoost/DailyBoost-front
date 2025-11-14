@@ -5,7 +5,7 @@
  * 
  * 실행 로그 분석:
  * - 네이버 OAuth2 페이지는 정상적으로 로드됨
- * - 로그인 성공 후 백엔드 콜백 URL 도착: http://112.165.239.133:8080/login/oauth2/code/naver?code=...&state=...
+ * - 로그인 성공 후 백엔드 콜백 URL 도착: https://dailyboost.duckdns.org/login/oauth2/code/naver?code=...&state=...
  * - 이후 WebView가 콜백 URL을 그대로 화면에 띄우려다가 내용이 없어서 흰 화면으로 보임
  * - "CookieManager 사용 불가 - AsyncStorage 사용" 메시지: WebView와 RN이 쿠키를 공유하지 않음
  * 
@@ -30,7 +30,7 @@ import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 
-const BACKEND_URL = 'http://112.165.239.133:8080';
+const BACKEND_URL = 'https://dailyboost.duckdns.org';
 
 /**
  * WebView에 주입할 JavaScript
@@ -224,8 +224,8 @@ function LoginWebView({ provider = 'naver', onLoginSuccess, onClose }: LoginWebV
    * 이 부분은 콜백 URL 감지해서 WebView를 닫는 부분입니다.
    * 
    * 실행 로그를 보면:
-   * - "WebView Navigation: http://112.165.239.133:8080/login/oauth2/code/naver?code=...&state=..."
-   * - "WebView onLoadEnd: http://112.165.239.133:8080/login/oauth2/code/naver?code=...&state=..."
+   * - "WebView Navigation: https://dailyboost.duckdns.org/login/oauth2/code/naver?code=...&state=..."
+   * - "WebView onLoadEnd: https://dailyboost.duckdns.org/login/oauth2/code/naver?code=...&state=..."
    * - 이후 같은 콜백 URL을 또 로드하려고 하고, 결국 흰 화면에서 멈춤
    * 
    * 문제: WebView가 콜백 URL을 그대로 화면에 띄우려다가 내용이 없어서 흰 화면으로 보임
@@ -240,7 +240,7 @@ function LoginWebView({ provider = 'naver', onLoginSuccess, onClose }: LoginWebV
       const url: string = req.url || '';
       
       // 콜백 URL 감지
-      // 실행 로그에서 보이는 콜백 URL: http://112.165.239.133:8080/login/oauth2/code/naver?code=...&state=...
+      // 실행 로그에서 보이는 콜백 URL: https://dailyboost.duckdns.org/login/oauth2/code/naver?code=...&state=...
       if (url.startsWith(CALLBACK_PREFIX)) {
         console.log('✅ 로그인 성공 콜백 URL 감지:', url);
         

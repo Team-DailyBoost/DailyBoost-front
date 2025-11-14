@@ -94,23 +94,10 @@ export async function recommendRecipe(request: RecipeRequest): Promise<FoodRecom
  * HTTP 표준상 GET 요청에는 body를 보낼 수 없으므로, POST로 시도합니다.
  */
 export async function recommendExercise(request: ExerciseRequest): Promise<ExerciseRecommendation> {
-  try {
-    // POST로 먼저 시도 (백엔드가 POST도 허용하는 경우)
-    const response = await client.post<ApiResponse<ExerciseRecommendation>>(
-      '/api/recommend/exercise',
-      request
-    );
-    return extractApiValue(response);
-  } catch (error: any) {
-    // POST 실패 시 GET with query parameters로 fallback 시도
-    if (error.response?.status === 405) {
-      const response = await client.get<ApiResponse<ExerciseRecommendation>>(
-        '/api/recommend/exercise',
-        { params: { userInput: request.userInput, level: request.level } }
-      );
-      return extractApiValue(response);
-    }
-    throw error;
-  }
+  const response = await client.post<ApiResponse<ExerciseRecommendation>>(
+    '/api/recommend/exercise',
+    request
+  );
+  return extractApiValue(response);
 }
 

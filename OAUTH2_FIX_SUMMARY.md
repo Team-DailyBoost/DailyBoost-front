@@ -2,7 +2,7 @@
 
 ## 문제 상황
 
-네이버 OAuth2 로그인 후 백엔드 콜백 URL(`http://112.165.239.133:8080/login/oauth2/code/naver`)에 도착했을 때 WebView가 하얀 화면으로 멈추는 문제가 발생했습니다.
+네이버 OAuth2 로그인 후 백엔드 콜백 URL(`https://dailyboost.duckdns.org/login/oauth2/code/naver`)에 도착했을 때 WebView가 하얀 화면으로 멈추는 문제가 발생했습니다.
 
 ## 해결 방법
 

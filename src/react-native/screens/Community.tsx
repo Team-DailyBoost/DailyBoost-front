@@ -21,13 +21,16 @@ interface Post {
   id: string;
   author: string;
   authorId: string;
+  authorProfileImage?: string | null;
   category: string;
   title: string;
   content: string;
   likes: number;
   likedBy: string[];
   comments: number;
+  createdAt: string;
   time: string;
+  displayDate: string;
   image?: string;
 }
 
@@ -55,6 +58,113 @@ interface CompetitionEntry {
   votedBy: string[];
   submittedAt: string;
 }
+
+const POST_KIND_CATEGORY_MAP: Record<string, string> = {
+  EXERCISE: '운동',
+  FOOD: '식단',
+  DIET: '질문',
+};
+
+const resolveImageUrl = (input?: string | null): string | null => {
+  if (!input) return null;
+  if (input.startsWith('http://') || input.startsWith('https://')) {
+    return input;
+  }
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return `${API_CONFIG.BASE_URL}${normalized}`;
+};
+
+const formatPostDate = (input?: string | Date | null) => {
+  if (!input) return '';
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSeconds < 60) return '방금 전';
+  if (diffMinutes < 60) return `${diffMinutes}분 전`;
+  if (diffHours < 24) return `${diffHours}시간 전`;
+  if (diffDays < 7) return `${diffDays}일 전`;
+
+  return new Intl.DateTimeFormat('ko-KR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const formatAbsoluteDate = (input?: string | Date | null) => {
+  if (!input) return '';
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('ko-KR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const normalizePost = (raw: any, fallbackCategory?: string): Post => {
+  const createdAtRaw =
+    raw?.createdAt ??
+    raw?.createAt ??
+    raw?.time ??
+    raw?.timestamp ??
+    raw?.postedAt;
+
+  const createdAtDate = createdAtRaw ? new Date(createdAtRaw) : new Date();
+  const createdAtIso = Number.isNaN(createdAtDate.getTime())
+    ? new Date().toISOString()
+    : createdAtDate.toISOString();
+
+  const category =
+    raw?.category ??
+    POST_KIND_CATEGORY_MAP[raw?.postKind] ??
+    fallbackCategory ??
+    '운동';
+
+  const authorId =
+    raw?.authorId ??
+    raw?.userId ??
+    raw?.authorEmail ??
+    raw?.email ??
+    'unknown';
+
+  return {
+    id: String(raw?.id ?? raw?.postId ?? Date.now()),
+    author: raw?.author ?? raw?.authorName ?? raw?.nickname ?? '익명',
+    authorId: String(authorId),
+    authorProfileImage:
+      resolveImageUrl(
+        raw?.authorProfileImage ??
+          raw?.authorProfileImageUrl ??
+          raw?.profileImage ??
+          raw?.profileImageUrl ??
+          null
+      ),
+    category,
+    title: raw?.title ?? '',
+    content: raw?.content ?? '',
+    likes: Number(raw?.likes ?? raw?.likeCount ?? 0),
+    likedBy: Array.isArray(raw?.likedBy) ? raw.likedBy.map((id: any) => String(id)) : [],
+    comments: Number(raw?.comments ?? raw?.commentCount ?? 0),
+    createdAt: createdAtIso,
+    time: formatPostDate(createdAtIso),
+    displayDate: formatAbsoluteDate(createdAtIso),
+    image: raw?.image ?? raw?.imageUrl ?? undefined,
+  };
+};
 
 export function Community() {
   const [activeTab, setActiveTab] = useState<'posts' | 'competition'>('posts');
@@ -108,14 +218,31 @@ export function Community() {
 
   const loadProfileImages = async () => {
     const imageMap: Record<string, string> = {};
+    const missingAuthorIds: Set<string> = new Set();
+
     for (const post of posts) {
-      if (!imageMap[post.authorId]) {
-        const saved = await AsyncStorage.getItem(`profileImage_${post.authorId}`);
-        if (saved) {
-          imageMap[post.authorId] = saved;
-        }
+      if (post.authorProfileImage) {
+        imageMap[post.authorId] = resolveImageUrl(post.authorProfileImage) || post.authorProfileImage;
+        try {
+          await AsyncStorage.setItem(
+            `profileImage_${post.authorId}`,
+            post.authorProfileImage
+          );
+        } catch {}
+      } else if (!imageMap[post.authorId]) {
+        missingAuthorIds.add(post.authorId);
       }
     }
+
+    for (const authorId of missingAuthorIds) {
+      try {
+        const saved = await AsyncStorage.getItem(`profileImage_${authorId}`);
+        if (saved) {
+          imageMap[authorId] = resolveImageUrl(saved) || saved;
+        }
+      } catch {}
+    }
+
     setUserProfileImages(imageMap);
   };
 
@@ -135,19 +262,9 @@ export function Community() {
         // 각 응답 처리
         [exerciseRes, foodRes, dietRes].forEach((res, index) => {
           if (res.success && Array.isArray(res.data)) {
-            const transformedPosts = res.data.map((post: any) => ({
-              id: String(post.id),
-              author: post.authorName || '익명',
-              authorId: post.authorId || post.userId || 'unknown',
-              category: categoryMap[index] || post.category || '운동',
-              title: post.title,
-              content: post.content,
-              likes: post.likeCount || 0,
-              likedBy: post.likedBy || [],
-              comments: post.commentCount || 0,
-              time: post.createdAt || post.time || new Date().toISOString(),
-              image: post.image,
-            }));
+            const transformedPosts = res.data.map((post: any) =>
+              normalizePost(post, categoryMap[index])
+            );
             allPosts.push(...transformedPosts);
           }
         });
@@ -158,8 +275,8 @@ export function Community() {
         } else {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
           if (savedPosts) {
-            const parsed = JSON.parse(savedPosts);
-            setPosts(parsed);
+            const parsed: any[] = JSON.parse(savedPosts);
+            setPosts(parsed.map(item => normalizePost(item)));
           }
         }
 
@@ -175,8 +292,8 @@ export function Community() {
         try {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
           if (savedPosts) {
-            const parsed = JSON.parse(savedPosts);
-            setPosts(parsed);
+            const parsed: any[] = JSON.parse(savedPosts);
+            setPosts(parsed.map(item => normalizePost(item)));
           }
           const savedCompetition = await AsyncStorage.getItem('competitionEntries');
           if (savedCompetition) setCompetitionEntries(JSON.parse(savedCompetition));
@@ -200,14 +317,21 @@ export function Community() {
         
         // PostResponse를 로컬 Post 형식으로 변환하여 selectedPost 업데이트
         if (selectedPost && selectedPost.id === postId) {
+          const createdAtIso = postData.createdAt
+            ? new Date(postData.createdAt).toISOString()
+            : selectedPost.createdAt;
           const updatedPost: Post = {
             ...selectedPost,  // 기존 데이터 유지
             title: postData.title || selectedPost.title,
             content: postData.content || selectedPost.content,
             author: postData.authorName || selectedPost.author,
+            authorProfileImage:
+              resolveImageUrl(postData.authorProfileImageUrl) || selectedPost.authorProfileImage,
             likes: postData.likeCount || selectedPost.likes,
             comments: postData.commentCount || selectedPost.comments,
-            time: postData.createdAt ? new Date(postData.createdAt).toLocaleString('ko-KR') : selectedPost.time,
+            createdAt: createdAtIso,
+            time: formatPostDate(createdAtIso),
+            displayDate: formatAbsoluteDate(createdAtIso),
           };
           setSelectedPost(updatedPost);
         }
@@ -220,7 +344,7 @@ export function Community() {
             author: comment.authorName || '익명',
             authorId: comment.authorId || String(comment.userId) || 'unknown',
             content: comment.content || comment.comment,
-            time: comment.createAt ? new Date(comment.createAt).toLocaleString('ko-KR') : new Date().toLocaleString('ko-KR'),
+            time: formatPostDate(comment.createAt || comment.createdAt || new Date()),
             likes: comment.likeCount || 0,
           }));
           setComments(transformedComments);
@@ -238,7 +362,7 @@ export function Community() {
           author: comment.authorName || '익명',
           authorId: String(comment.authorId || comment.userId || 'unknown'),
           content: comment.comment || comment.content,
-          time: comment.createAt || comment.createdAt || new Date().toISOString(),
+          time: formatPostDate(comment.createAt || comment.createdAt || new Date()),
           likes: comment.likeCount || 0,
         }));
         setComments(transformedComments);
@@ -246,7 +370,13 @@ export function Community() {
         // 로컬 저장소에서 댓글 가져오기
         const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
         if (savedComments) {
-          setComments(JSON.parse(savedComments));
+          const parsed: Comment[] = JSON.parse(savedComments);
+          setComments(
+            parsed.map(comment => ({
+              ...comment,
+              time: formatPostDate(comment.time) || String(comment.time || ''),
+            }))
+          );
         } else {
           setComments([]);
         }
@@ -255,7 +385,13 @@ export function Community() {
       // 로컬 저장소에서 댓글 가져오기
       const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
       if (savedComments) {
-        setComments(JSON.parse(savedComments));
+        const parsed: Comment[] = JSON.parse(savedComments);
+        setComments(
+          parsed.map(comment => ({
+            ...comment,
+          time: formatPostDate(comment.time) || String(comment.time || ''),
+          }))
+        );
       } else {
         setComments([]);
       }
@@ -270,7 +406,7 @@ export function Community() {
 
     // 백엔드에 댓글 추가 (postId는 Long 타입이므로 number로 변환)
     try {
-      const res = await api.post(API_CONFIG.ENDPOINTS.ADD_COMMENT, {
+      const res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, {
         postId: Number(selectedPost.id),
         content: newComment.trim(),
       });
@@ -635,19 +771,9 @@ export function Community() {
         try {
           const res = await api.get<any[]>(`${API_CONFIG.ENDPOINTS.SEARCH_POSTS}?title=${encodeURIComponent(searchQuery)}`);
           if (res.success && Array.isArray(res.data)) {
-            const transformedPosts = res.data.map((post: any) => ({
-              id: String(post.id),
-              author: post.authorName || '익명',
-              authorId: post.authorId || post.userId || 'unknown',
-              category: post.category || '운동',
-              title: post.title,
-              content: post.content,
-              likes: post.likeCount || 0,
-              likedBy: post.likedBy || [],
-              comments: post.commentCount || 0,
-              time: post.createdAt || post.time || new Date().toISOString(),
-              image: post.image,
-            }));
+            const transformedPosts = res.data.map((post: any) =>
+              normalizePost(post)
+            );
             setFilteredPosts(transformedPosts);
           } else {
             // 백엔드 검색 실패 시 로컬 필터링
@@ -761,7 +887,10 @@ export function Community() {
                       >
                         <Text style={styles.postAuthor}>{post.author}</Text>
                       </TouchableOpacity>
-                      <Text style={styles.postTime}>{post.time}</Text>
+                      <Text style={styles.postTime}>
+                        {post.displayDate}
+                        {post.time ? ` · ${post.time}` : ''}
+                      </Text>
                     </View>
                   </View>
                       <Badge>{post.category}</Badge>
@@ -972,20 +1101,34 @@ export function Community() {
                     const res = await api.post(API_CONFIG.ENDPOINTS.CREATE_POST, payload);
                     if (res?.success) {
                       // Backend success, also save locally
+                      const createdAtIso = new Date().toISOString();
+                      const profileImageUrl =
+                        currentUser.profileImage ||
+                        currentUser.profileImageUrl ||
+                        userProfileImages[userId] ||
+                        null;
                       const post: Post = {
                         id: Date.now().toString(),
                         author: currentUser.name,
                         authorId: userId,
+                        authorProfileImage: profileImageUrl,
                         category: newPost.category,
                         title: newPost.title,
                         content: newPost.content,
                         likes: 0,
                         likedBy: [],
                         comments: 0,
-                        time: new Date().toLocaleString('ko-KR'),
+                        createdAt: createdAtIso,
+                        time: formatPostDate(createdAtIso),
                       };
                       setPosts([post, ...posts]);
                       AsyncStorage.setItem('communityPosts', JSON.stringify([post, ...posts]));
+                      if (profileImageUrl) {
+                        setUserProfileImages(prev => ({
+                          ...prev,
+                          [userId]: profileImageUrl,
+                        }));
+                      }
                       setShowWriteModal(false);
                       setNewPost({ title: '', content: '', category: '운동' });
                       Alert.alert('완료', '게시글이 작성되었습니다');
@@ -996,20 +1139,34 @@ export function Community() {
                   }
 
                   // Fallback to local only
+                  const createdAtIso = new Date().toISOString();
+                  const profileImageUrl =
+                    currentUser.profileImage ||
+                    currentUser.profileImageUrl ||
+                    userProfileImages[userId] ||
+                    null;
                   const post: Post = {
                     id: Date.now().toString(),
                     author: currentUser.name,
                     authorId: userId,
+                    authorProfileImage: profileImageUrl,
                     category: newPost.category,
                     title: newPost.title,
                     content: newPost.content,
                     likes: 0,
                     likedBy: [],
                     comments: 0,
-                    time: new Date().toLocaleString('ko-KR'),
+                    createdAt: createdAtIso,
+                    time: formatPostDate(createdAtIso),
                   };
                   setPosts([post, ...posts]);
                   AsyncStorage.setItem('communityPosts', JSON.stringify([post, ...posts]));
+                  if (profileImageUrl) {
+                    setUserProfileImages(prev => ({
+                      ...prev,
+                      [userId]: profileImageUrl,
+                    }));
+                  }
                   setShowWriteModal(false);
                   setNewPost({ title: '', content: '', category: '운동' });
                   Alert.alert('완료', '게시글이 작성되었습니다');
@@ -1100,7 +1257,10 @@ export function Community() {
                           >
                             <Text style={styles.postAuthor}>{selectedPost.author}</Text>
                           </TouchableOpacity>
-                          <Text style={styles.postTime}>{selectedPost.time}</Text>
+                          <Text style={styles.postTime}>
+                            {selectedPost.displayDate}
+                            {selectedPost.time ? ` · ${selectedPost.time}` : ''}
+                          </Text>
                         </View>
                       </View>
                       <Badge>{selectedPost.category}</Badge>

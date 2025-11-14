@@ -11,7 +11,7 @@ import { WebViewManager } from '../utils/webViewManager';
 import { ApiResponse } from './client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'http://112.165.239.133:8080';
+const BASE_URL = 'https://dailyboost.duckdns.org';
 
 /**
  * HTML 로그인 페이지 응답인지 확인

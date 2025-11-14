@@ -2,7 +2,7 @@
  * Exercise API
  * 
  * Swagger 명세: /api/recommend/exercise
- * baseURL: http://112.165.239.133:8080
+ * baseURL: https://dailyboost.duckdns.org
  * 
  * 운동 추천 관련 API 함수들입니다.
  * 
@@ -56,27 +56,10 @@ export async function getExerciseRecommendation(
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER'
 ): Promise<ExerciseRecommendation> {
   const request: ExerciseRequest = { userInput, level };
-  
-  try {
-    // POST로 먼저 시도 (백엔드가 POST도 허용하는 경우)
-    return requestWithWebViewFallback<ExerciseRecommendation>('POST', '/api/recommend/exercise', {
-      body: request,
-    });
-  } catch (error: any) {
-    // POST 실패 시 GET with query parameters로 fallback 시도
-    // 하지만 백엔드가 @RequestBody를 요구하므로 쿼리 파라미터는 작동하지 않을 수 있음
-    if (error.message?.includes('405') || error.message?.includes('400') || error.message?.includes('Method Not Allowed')) {
-      try {
-        return requestWithWebViewFallback<ExerciseRecommendation>('GET', '/api/recommend/exercise', {
-          query: { userInput, level },
-        });
-      } catch (getError) {
-        // GET도 실패하면 원래 에러를 던짐
-        throw error;
-      }
-    }
-    throw error;
-  }
+
+  return requestWithWebViewFallback<ExerciseRecommendation>('POST', '/api/recommend/exercise', {
+    body: request,
+  });
 }
 
 /**

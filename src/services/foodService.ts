@@ -1,5 +1,6 @@
 import { api, API_CONFIG } from './api';
 import { WebViewManager } from '../utils/webViewManager';
+import { getFoodRecommendations as fetchFoodRecommendations } from '../api/foods';
 
 /**
  * Food response interface (from backend)
@@ -114,8 +115,7 @@ export class FoodService {
   static async getFoodRecommendations() {
     try {
       // 우리가 만든 client.ts 기반 API 사용
-      const { getFoodRecommendations } = await import('../api/foods');
-      const result = await getFoodRecommendations();
+      const result = await fetchFoodRecommendations();
       
       return { 
         success: true, 

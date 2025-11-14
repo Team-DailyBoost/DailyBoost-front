@@ -2,7 +2,7 @@
  * API Client (Axios)
  * 
  * 백엔드 API 호출을 위한 axios 인스턴스입니다.
- * baseURL: http://112.165.239.133:8080
+ * baseURL: https://dailyboost.duckdns.org
  * 
  * 실행 로그 분석:
  * - "CookieManager 사용 불가 - AsyncStorage 사용" 메시지가 나오는 이유:
@@ -18,7 +18,7 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'http://112.165.239.133:8080';
+const BASE_URL = 'https://dailyboost.duckdns.org';
 
 /**
  * Axios 인스턴스 생성

@@ -2,7 +2,7 @@
  * Food API
  * 
  * Swagger 명세: /api/food/**
- * baseURL: http://112.165.239.133:8080
+ * baseURL: https://dailyboost.duckdns.org
  * 
  * 이 파일은 Swagger 엔드포인트를 호출하는 예시입니다.
  * 

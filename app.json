@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "scheme": "workoutmealplan",
+    "scheme": "dailyboost",
     "splash": {
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
@@ -30,12 +30,23 @@
       "navigationBar": {
         "backgroundColor": "#ffffff",
         "barStyle": "dark-content"
-    },
+      },
       "softwareKeyboardLayoutMode": "pan",
       "usesCleartextTraffic": true,
       "networkSecurityConfig": {
         "cleartextTrafficPermitted": true
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": ["BROWSABLE", "DEFAULT"],
+          "data": [
+            {
+              "scheme": "dailyboost"
+            }
+          ]
+        }
+      ]
     },
     "plugins": [
       "expo-font",

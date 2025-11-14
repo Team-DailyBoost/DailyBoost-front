@@ -3,7 +3,7 @@
  * Updated to match backend API specification
  */
 export const API_CONFIG = {
-  BASE_URL: 'http://112.165.239.133:8080',
+  BASE_URL: 'https://dailyboost.duckdns.org',
   
   // API Endpoints
   ENDPOINTS: {

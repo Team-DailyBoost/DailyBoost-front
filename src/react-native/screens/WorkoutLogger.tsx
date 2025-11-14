@@ -15,6 +15,7 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
 import { WorkoutService } from '../../services/workoutService';
+import { getExerciseRecommendation } from '../api/exercises';
 
 interface Exercise {
   id: string;

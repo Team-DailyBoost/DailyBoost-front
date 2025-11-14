@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,16 @@ import { LineChart, BarChart } from 'react-native-chart-kit';
 import { Feather as Icon } from '@expo/vector-icons';
 import { FoodService } from '../../services/foodService';
 import { WorkoutService } from '../../services/workoutService';
+import { useFocusEffect } from '@react-navigation/native';
+import {
+  aggregateDailyTotals,
+  aggregateWeeklyCalories,
+  cacheTodayTotals,
+  cacheWeeklyCalories,
+  normalizeFoodApiItem,
+  readCachedTodayTotals,
+  readCachedWeeklyCalories,
+} from '../../utils/foodStats';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -42,6 +52,10 @@ export function Dashboard() {
   const [dietRecommendations, setDietRecommendations] = useState<DietRecommendation[]>([]);
   const [loadingExercise, setLoadingExercise] = useState(false);
   const [loadingDiet, setLoadingDiet] = useState(false);
+  const [foodTotals, setFoodTotals] = useState({ calories: 0, protein: 0, carbs: 0, fat: 0 });
+  const [weeklyCaloriesData, setWeeklyCaloriesData] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+  const [weeklyAverageCalories, setWeeklyAverageCalories] = useState(0);
+  const [loadingFoodStats, setLoadingFoodStats] = useState(false);
   
   // 중복 호출 방지 플래그
   const requestingExerciseRef = useRef(false);
@@ -61,16 +75,9 @@ export function Dashboard() {
     exercise: 60
   };
 
-  const current = {
-    calories: 1650,
-    protein: 95,
-    carbs: 180,
-    fat: 52,
-    exercise: 45
-  };
-
   // Character states based on exercise completion
-  const exerciseProgress = (current.exercise / dailyGoals.exercise) * 100;
+  const exerciseMinutes = Math.max(Math.floor(workoutTimer / 60), 0);
+  const exerciseProgress = (exerciseMinutes / dailyGoals.exercise) * 100;
   
   const getCharacterState = () => {
     if (exerciseProgress >= 100) {
@@ -165,6 +172,28 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const cachedToday = await readCachedTodayTotals();
+        if (cachedToday) {
+          setFoodTotals({
+            calories: Math.round(cachedToday.calories),
+            protein: Math.round(cachedToday.protein),
+            carbs: Math.round(cachedToday.carbs),
+            fat: Math.round(cachedToday.fat),
+          });
+        }
+
+        const cachedWeekly = await readCachedWeeklyCalories();
+        if (cachedWeekly) {
+          setWeeklyCaloriesData(cachedWeekly.data);
+          setWeeklyAverageCalories(cachedWeekly.average);
+        }
+      } catch {}
+    })();
+  }, []);
+
   const loadWorkoutTimer = async () => {
     try {
       const saved = await AsyncStorage.getItem('workoutTimerSeconds');
@@ -175,6 +204,46 @@ export function Dashboard() {
       console.error('Failed to load workout timer:', error);
     }
   };
+
+  const loadFoodStats = useCallback(async () => {
+    setLoadingFoodStats(true);
+    try {
+      const [todayRes, weeklyRes] = await Promise.all([
+        FoodService.getTodayFoodLogs(),
+        FoodService.getWeeklyFoodLogs(),
+      ]);
+
+      if (todayRes.success && Array.isArray(todayRes.data)) {
+        const normalizedToday = todayRes.data.map((item: any) => normalizeFoodApiItem(item));
+        const totals = aggregateDailyTotals(normalizedToday);
+        setFoodTotals({
+          calories: Math.round(totals.calories),
+          protein: Math.round(totals.protein),
+          carbs: Math.round(totals.carbs),
+          fat: Math.round(totals.fat),
+        });
+        await cacheTodayTotals(totals);
+      }
+
+      if (weeklyRes.success && Array.isArray(weeklyRes.data)) {
+        const normalizedWeekly = weeklyRes.data.map((item: any) => normalizeFoodApiItem(item));
+        const summary = aggregateWeeklyCalories(normalizedWeekly);
+        setWeeklyCaloriesData(summary.data);
+        setWeeklyAverageCalories(summary.average);
+        await cacheWeeklyCalories(summary);
+      }
+    } catch (error) {
+      console.log('⚠️ 식단 통계 로드 실패:', error);
+    } finally {
+      setLoadingFoodStats(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadFoodStats();
+    }, [loadFoodStats])
+  );
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -438,13 +507,13 @@ export function Dashboard() {
           <View style={styles.summaryRow}>
             <View style={[styles.summaryBox, { backgroundColor: '#ede9fe' }]}>
               <Text style={[styles.summaryValue, { color: '#6366f1' }]}>
-                {current.calories}
+                {foodTotals.calories}
               </Text>
               <Text style={styles.summaryLabel}>섭취 칼로리</Text>
             </View>
             <View style={[styles.summaryBox, { backgroundColor: '#fee2e2' }]}>
               <Text style={[styles.summaryValue, { color: '#dc2626' }]}>
-                {dailyGoals.calories - current.calories}
+                {dailyGoals.calories - foodTotals.calories}
               </Text>
               <Text style={styles.summaryLabel}>남은 칼로리</Text>
             </View>
@@ -452,7 +521,7 @@ export function Dashboard() {
           
           <View style={styles.progressSection}>
             <ProgressBar
-              current={current.calories}
+              current={foodTotals.calories}
               goal={dailyGoals.calories}
               label="일일 칼로리 목표"
               unit="kcal"
@@ -465,9 +534,9 @@ export function Dashboard() {
       <Card>
         <CardHeader title="영양소 현황" icon="target" />
         <View style={styles.cardContent}>
-          <ProgressBar current={current.protein} goal={dailyGoals.protein} label="단백질" />
-          <ProgressBar current={current.carbs} goal={dailyGoals.carbs} label="탄수화물" />
-          <ProgressBar current={current.fat} goal={dailyGoals.fat} label="지방" />
+          <ProgressBar current={foodTotals.protein} goal={dailyGoals.protein} label="단백질" />
+          <ProgressBar current={foodTotals.carbs} goal={dailyGoals.carbs} label="탄수화물" />
+          <ProgressBar current={foodTotals.fat} goal={dailyGoals.fat} label="지방" />
         </View>
       </Card>
 
@@ -476,7 +545,7 @@ export function Dashboard() {
         <CardHeader title="운동 현황" icon="activity" />
         <View style={styles.cardContent}>
           <ProgressBar
-            current={current.exercise}
+            current={exerciseMinutes}
             goal={dailyGoals.exercise}
             label="운동 시간"
             unit="분"
