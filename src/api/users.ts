@@ -9,6 +9,7 @@
  * RN에서 직접 호출 시 HTML 로그인 페이지가 오면 WebView를 통해 다시 시도합니다.
  */
 import { requestWithWebViewFallback } from './http';
+import client, { ApiResponse, extractApiValue } from './client';
 
 /**
  * Health Info 타입
@@ -44,6 +45,12 @@ export interface UserUpdateRequest {
   age?: string;
   gender?: 'MALE' | 'FEMALE' | 'OTHER';
   healthInfo?: HealthInfo;
+}
+
+export interface UserProfileUploadFile {
+  uri: string;
+  name?: string;
+  type?: string;
 }
 
 /**
@@ -102,12 +109,34 @@ export async function initUserInfo(request: UserRequest): Promise<MessageRespons
  * - requestBody: UserUpdateRequest (required)
  * - response: ApiMessageResponse (value는 MessageResponse)
  */
-export async function updateUserInfo(request: UserUpdateRequest): Promise<MessageResponse> {
-  const response = await requestWithWebViewFallback<MessageResponse>('POST', '/api/user/update', {
-    body: request,
-  });
-  // requestWithWebViewFallback이 이미 ApiResponse<T>의 value를 반환하므로
-  return response;
+export async function updateUserInfo(
+  request: UserUpdateRequest,
+  file?: UserProfileUploadFile,
+): Promise<MessageResponse> {
+  const formData = new FormData();
+  formData.append('userUpdateRequest', JSON.stringify(request ?? {}));
+
+  if (file?.uri) {
+    formData.append(
+      'file',
+      {
+        uri: file.uri,
+        name: file.name || `profile-${Date.now()}.jpg`,
+        type: file.type || 'image/jpeg',
+      } as any,
+    );
+  }
+
+  const response = await client.post<ApiResponse<MessageResponse>>(
+    '/api/user/update',
+    formData,
+    {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    },
+  );
+  return extractApiValue(response);
 }
 
 /**

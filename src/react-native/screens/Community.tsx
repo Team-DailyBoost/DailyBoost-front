@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,10 +9,12 @@ import {
   Modal,
   Image,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api, API_CONFIG } from '../../services/api';
+import { createPost } from '../../api/posts';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -31,7 +33,8 @@ interface Post {
   createdAt: string;
   time: string;
   displayDate: string;
-  image?: string;
+  imageUrls?: string[];
+  thumbnail?: string | null;
 }
 
 interface Comment {
@@ -65,15 +68,66 @@ const POST_KIND_CATEGORY_MAP: Record<string, string> = {
   DIET: '질문',
 };
 
+const COMMUNITY_CATEGORY_ORDER = ['운동', '식단', '질문', '자유'];
+const COMMUNITY_CATEGORY_FILTERS = ['전체', ...COMMUNITY_CATEGORY_ORDER];
+
 const resolveImageUrl = (input?: string | null): string | null => {
   if (!input) return null;
-  if (input.startsWith('http://') || input.startsWith('https://')) {
-    return input;
+
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const toUploadsUrl = (filename: string) =>
+    `${API_CONFIG.BASE_URL}/uploads/${filename}`;
+
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
   }
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  return `${API_CONFIG.BASE_URL}${normalized}`;
+
+  const filenameMatch = raw.match(/([^/\\]+)$/);
+  const filename = filenameMatch ? filenameMatch[1] : undefined;
+
+  if (raw.includes('upload-dir') && filename) {
+    return toUploadsUrl(filename);
+  }
+
+  if (raw.startsWith('uploads/') && filename) {
+    return toUploadsUrl(filename);
+  }
+
+  if (raw.startsWith('/uploads/') && filename) {
+    return toUploadsUrl(filename);
+  }
+
+  if (raw.startsWith('/')) {
+    return `${API_CONFIG.BASE_URL}${raw}`;
+  }
+
+  return `${API_CONFIG.BASE_URL}/${raw}`;
+};
+
+const normalizeImageValue = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    return resolveImageUrl(value);
+  }
+  if (value && typeof value === 'object' && 'url' in (value as Record<string, unknown>)) {
+    const maybeUrl = (value as Record<string, unknown>).url;
+    if (typeof maybeUrl === 'string') {
+      return resolveImageUrl(maybeUrl);
+    }
+  }
+  return null;
+};
+
+const resolveImageList = (input?: unknown): string[] => {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input
+      .map(normalizeImageValue)
+      .filter((url): url is string => Boolean(url));
+  }
+  const normalized = normalizeImageValue(input);
+  return normalized ? [normalized] : [];
 };
 
 const formatPostDate = (input?: string | Date | null) => {
@@ -142,6 +196,19 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
     raw?.email ??
     'unknown';
 
+  const imageCandidates = [
+    ...resolveImageList(raw?.imageUrls),
+    ...resolveImageList(raw?.images),
+    ...resolveImageList(raw?.image),
+    ...resolveImageList(raw?.imageUrl),
+  ];
+  const imageUrls = Array.from(new Set(imageCandidates));
+  const thumbnail =
+    imageUrls[0] ??
+    normalizeImageValue(raw?.thumbnail) ??
+    normalizeImageValue(raw?.thumbnailUrl) ??
+    null;
+
   return {
     id: String(raw?.id ?? raw?.postId ?? Date.now()),
     author: raw?.author ?? raw?.authorName ?? raw?.nickname ?? '익명',
@@ -163,7 +230,8 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
     createdAt: createdAtIso ?? (createdAtRaw ? String(createdAtRaw) : ''),
     time: createdAtIso ? formatPostDate(createdAtIso) : '',
     displayDate: createdAtIso ? formatAbsoluteDate(createdAtIso) : '',
-    image: raw?.image ?? raw?.imageUrl ?? undefined,
+    imageUrls,
+    thumbnail,
   };
 };
 
@@ -184,11 +252,14 @@ const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
         const res = await api.get<any>(`${API_CONFIG.ENDPOINTS.GET_POST_DETAIL}/${postId}`);
         if (res.success && res.data?.createdAt) {
           const createdAtIso = new Date(res.data.createdAt).toISOString();
+          const detailImages = resolveImageList(res.data.imageUrls);
           return {
             id: String(postId),
             createdAt: createdAtIso,
             time: formatPostDate(createdAtIso),
             displayDate: formatAbsoluteDate(createdAtIso),
+            imageUrls: detailImages,
+            thumbnail: detailImages[0] || null,
           };
         }
       } catch (error) {
@@ -200,7 +271,7 @@ const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
 
   const enrichmentMap = new Map<
     string,
-    { createdAt: string; time: string; displayDate: string }
+    { createdAt: string; time: string; displayDate: string; imageUrls?: string[]; thumbnail?: string | null }
   >();
 
   detailResults.forEach((result) => {
@@ -209,6 +280,10 @@ const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
         createdAt: result.value.createdAt,
         time: result.value.time,
         displayDate: result.value.displayDate,
+        imageUrls: result.value.imageUrls,
+        thumbnail:
+          (result.value.thumbnail ??
+            (result.value.imageUrls && result.value.imageUrls[0])) || null,
       });
     }
   });
@@ -225,6 +300,11 @@ const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
       createdAt: enriched.createdAt,
       time: enriched.time,
       displayDate: enriched.displayDate,
+      imageUrls: enriched.imageUrls && enriched.imageUrls.length > 0 ? enriched.imageUrls : post.imageUrls,
+      thumbnail:
+        (enriched.thumbnail ??
+          post.thumbnail ??
+          (post.imageUrls && post.imageUrls[0])) || null,
     };
   });
 };
@@ -248,6 +328,8 @@ export function Community() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [competitionImages, setCompetitionImages] = useState<string[]>([]);
+  const [postImages, setPostImages] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const [showPostImageActionSheet, setShowPostImageActionSheet] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<{ id: string; name: string } | null>(null);
   const [followers, setFollowers] = useState<Record<string, number>>({});
@@ -258,6 +340,29 @@ export function Community() {
   const [showEditPostModal, setShowEditPostModal] = useState(false);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [editPostData, setEditPostData] = useState({ title: '', content: '' });
+  const [filteredPosts, setFilteredPosts] = useState<Post[]>([]);
+  const [activeCategoryFilter, setActiveCategoryFilter] = useState<string>('전체');
+  const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
+
+  const filteredByCategory = useMemo(
+    () =>
+      activeCategoryFilter === '전체'
+        ? filteredPosts
+        : filteredPosts.filter(post => post.category === activeCategoryFilter),
+    [activeCategoryFilter, filteredPosts],
+  );
+
+  const sortedPosts = useMemo(() => {
+    if (!filteredByCategory || filteredByCategory.length === 0) {
+      return [];
+    }
+
+    return [...filteredByCategory].sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [filteredByCategory]);
 
   useEffect(() => {
     loadProfileImages();
@@ -310,9 +415,10 @@ export function Community() {
   };
 
   useEffect(() => {
+    let isMounted = true;
     (async () => {
+      setLoadingPosts(true);
       try {
-        // 모든 게시글 종류를 가져오기 위해 각각 호출
         const [exerciseRes, foodRes, dietRes] = await Promise.all([
           api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=EXERCISE`),
           api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=FOOD`),
@@ -322,7 +428,6 @@ export function Community() {
         const allPosts: Post[] = [];
         const categoryMap = ['운동', '식단', '질문'];
 
-        // 각 응답 처리
         [exerciseRes, foodRes, dietRes].forEach((res, index) => {
           if (res.success && Array.isArray(res.data)) {
             const transformedPosts = res.data.map((post: any) =>
@@ -334,41 +439,49 @@ export function Community() {
 
         if (allPosts.length > 0) {
           const enrichedPosts = await enrichPostsWithDetails(allPosts);
-          setPosts(enrichedPosts);
-          await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
+          if (isMounted) {
+            setPosts(enrichedPosts);
+            await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
+          }
         } else {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
-          if (savedPosts) {
+          if (savedPosts && isMounted) {
             const parsed: any[] = JSON.parse(savedPosts);
             setPosts(parsed.map(item => normalizePost(item)));
           }
         }
 
         const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-        if (savedCompetition) setCompetitionEntries(JSON.parse(savedCompetition));
+        if (savedCompetition && isMounted) setCompetitionEntries(JSON.parse(savedCompetition));
         
         const currentUserId = userId;
         const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
-        if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
+        if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
       } catch (error) {
         console.error('Failed to load data:', error);
-        // 에러 발생 시 로컬 저장소에서 데이터 로드 (fallback)
         try {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
-          if (savedPosts) {
+          if (savedPosts && isMounted) {
             const parsed: any[] = JSON.parse(savedPosts);
             setPosts(parsed.map(item => normalizePost(item)));
           }
           const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-          if (savedCompetition) setCompetitionEntries(JSON.parse(savedCompetition));
+          if (savedCompetition && isMounted) setCompetitionEntries(JSON.parse(savedCompetition));
           const currentUserId = userId;
           const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
-          if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
+          if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
         } catch (fallbackError) {
           console.error('Failed to load from local storage:', fallbackError);
         }
+      } finally {
+        if (isMounted) {
+          setLoadingPosts(false);
+        }
       }
     })();
+    return () => {
+      isMounted = false;
+    };
   }, [userId]);
 
   const loadComments = async (postId: string) => {
@@ -384,6 +497,11 @@ export function Community() {
           const createdAtIso = postData.createdAt
             ? new Date(postData.createdAt).toISOString()
             : selectedPost.createdAt;
+          const resolvedImages = Array.isArray(postData.imageUrls)
+            ? postData.imageUrls
+                .map((url: string) => resolveImageUrl(url))
+                .filter((url): url is string => Boolean(url))
+            : selectedPost.imageUrls;
           const updatedPost: Post = {
             ...selectedPost,  // 기존 데이터 유지
             title: postData.title || selectedPost.title,
@@ -396,6 +514,8 @@ export function Community() {
             createdAt: createdAtIso,
             time: formatPostDate(createdAtIso),
             displayDate: formatAbsoluteDate(createdAtIso),
+            imageUrls: resolvedImages || [],
+            thumbnail: resolvedImages && resolvedImages.length > 0 ? resolvedImages[0] : selectedPost.thumbnail,
           };
           setSelectedPost(updatedPost);
         }
@@ -754,7 +874,7 @@ export function Community() {
     );
   };
 
-  const pickImage = async () => {
+  const pickCompetitionImage = async () => {
     if (competitionImages.length >= 3) {
       Alert.alert('알림', '사진은 최대 3장까지 업로드할 수 있습니다.');
       return;
@@ -769,8 +889,7 @@ export function Community() {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaType.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
+      allowsEditing: false,
       quality: 1,
     });
 
@@ -779,9 +898,142 @@ export function Community() {
     }
   };
 
-  const removeImage = (index: number) => {
+  const removeCompetitionImage = (index: number) => {
     setCompetitionImages(competitionImages.filter((_, i) => i !== index));
   };
+
+  const pickPostImageFromLibrary = useCallback(async () => {
+    if (postImages.length >= 3) {
+      Alert.alert('알림', '사진은 최대 3장까지 업로드할 수 있습니다.');
+      return;
+    }
+
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '사진 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setPostImages(prev => [...prev, result.assets[0]]);
+      }
+    } catch (error) {
+      console.error('갤러리 열기 실패:', error);
+      Alert.alert('알림', '갤러리를 여는 중 문제가 발생했습니다.');
+    }
+  }, [postImages]);
+
+  const pickPostImageFromCamera = useCallback(async () => {
+    if (postImages.length >= 3) {
+      Alert.alert('알림', '사진은 최대 3장까지 업로드할 수 있습니다.');
+      return;
+    }
+
+    try {
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '카메라 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setPostImages(prev => [...prev, result.assets[0]]);
+      }
+    } catch (error) {
+      console.error('카메라 실행 실패:', error);
+      Alert.alert('알림', '카메라를 여는 중 문제가 발생했습니다.');
+    }
+  }, [postImages]);
+
+  const removePostImage = useCallback((index: number) => {
+    setPostImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const resetNewPostForm = useCallback(() => {
+    setNewPost({ title: '', content: '', category: '운동' });
+    setPostImages([]);
+  }, []);
+
+  const closeWriteModal = useCallback(() => {
+    resetNewPostForm();
+    setShowWriteModal(false);
+  }, [resetNewPostForm]);
+
+  const refreshPosts = useCallback(async () => {
+    setLoadingPosts(true);
+    try {
+      const [exerciseRes, foodRes, dietRes] = await Promise.all([
+        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=EXERCISE`),
+        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=FOOD`),
+        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=DIET`),
+      ]);
+
+      const allPosts: Post[] = [];
+      const categoryMap = ['운동', '식단', '질문'];
+
+      [exerciseRes, foodRes, dietRes].forEach((res, index) => {
+        if (res.success && Array.isArray(res.data)) {
+          const transformedPosts = res.data.map((post: any) =>
+            normalizePost(post, categoryMap[index])
+          );
+          allPosts.push(...transformedPosts);
+        }
+      });
+
+      if (allPosts.length > 0) {
+        const enrichedPosts = await enrichPostsWithDetails(allPosts);
+        setPosts(enrichedPosts);
+        await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
+      } else {
+        const savedPosts = await AsyncStorage.getItem('communityPosts');
+        if (savedPosts) {
+          const parsed: any[] = JSON.parse(savedPosts);
+          setPosts(parsed.map(item => normalizePost(item)));
+        }
+      }
+
+      const savedCompetition = await AsyncStorage.getItem('competitionEntries');
+      if (savedCompetition) setCompetitionEntries(JSON.parse(savedCompetition));
+      
+      const currentUserId = userId;
+      const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
+      if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      try {
+        const savedPosts = await AsyncStorage.getItem('communityPosts');
+        if (savedPosts) {
+          const parsed: any[] = JSON.parse(savedPosts);
+          setPosts(parsed.map(item => normalizePost(item)));
+        }
+        const savedCompetition = await AsyncStorage.getItem('competitionEntries');
+        if (savedCompetition) setCompetitionEntries(JSON.parse(savedCompetition));
+        const currentUserId = userId;
+        const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
+        if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
+      } catch (fallbackError) {
+        console.error('Failed to load from local storage:', fallbackError);
+      }
+    } finally {
+      setLoadingPosts(false);
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    refreshPosts();
+  }, [refreshPosts]);
 
   const handleFollow = async (targetUserId: string) => {
     if (targetUserId === userId) {
@@ -825,9 +1077,6 @@ export function Community() {
       }
     })();
   }, [selectedUser, userId]); // userId 의존성 추가
-
-  const [filteredPosts, setFilteredPosts] = useState<Post[]>([]);
-
   useEffect(() => {
     if (searchQuery.trim()) {
       // 백엔드 검색 API 호출
@@ -871,13 +1120,100 @@ export function Community() {
     .filter(e => e.category === 'physique')
     .sort((a, b) => b.votes - a.votes);
 
+  const renderPostCard = (post: Post) => (
+    <TouchableOpacity
+      key={post.id}
+      onPress={() => {
+        setSelectedPost(post);
+        loadComments(post.id);
+        setShowPostDetailModal(true);
+      }}
+    >
+      <Card style={styles.postCard}>
+        <View style={styles.postHeader}>
+          <View style={styles.postAuthorContainer}>
+            {userProfileImages[post.authorId] ? (
+              <Image 
+                source={{ uri: userProfileImages[post.authorId] }} 
+                style={styles.postAuthorAvatar}
+              />
+            ) : (
+              <View style={styles.postAuthorAvatarPlaceholder}>
+                <Text style={styles.postAuthorAvatarText}>
+                  {post.author?.charAt(0)?.toUpperCase() || '👤'}
+                </Text>
+              </View>
+            )}
+            <View>
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  setSelectedUser({ id: post.authorId, name: post.author });
+                  setShowProfileModal(true);
+                }}
+              >
+                <Text style={styles.postAuthor}>{post.author}</Text>
+              </TouchableOpacity>
+              <Text style={styles.postTime}>
+                {post.displayDate}
+                {post.time ? ` · ${post.time}` : ''}
+              </Text>
+            </View>
+          </View>
+              <Badge>{post.category}</Badge>
+        </View>
+
+        <Text style={styles.postTitle}>{post.title}</Text>
+        <Text style={styles.postContent} numberOfLines={2}>
+          {post.content}
+        </Text>
+
+        {(post.imageUrls && post.imageUrls.length > 0) || post.thumbnail ? (
+          <View style={styles.postImageWrapper}>
+            <Image
+              source={{ uri: (post.imageUrls && post.imageUrls[0]) || post.thumbnail! }}
+              style={styles.postImage}
+            />
+            {post.imageUrls && post.imageUrls.length > 1 && (
+              <View style={styles.postImageBadge}>
+                <Text style={styles.postImageBadgeText}>+{post.imageUrls.length - 1}</Text>
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        <View style={styles.postFooter}>
+          <TouchableOpacity
+            style={styles.likeButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              handleLike(post.id);
+            }}
+          >
+            <Text style={styles.likeIcon}>
+              {post.likedBy.includes(userId) ? '❤️' : '🤍'}
+            </Text>
+            <Text style={styles.likeCount}>{post.likes}</Text>
+          </TouchableOpacity>
+          <View style={styles.commentButton}>
+            <Text style={styles.commentIcon}>💬</Text>
+            <Text style={styles.commentCount}>{post.comments}</Text>
+          </View>
+        </View>
+      </Card>
+    </TouchableOpacity>
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>커뮤니티</Text>
         <TouchableOpacity
           style={styles.writeButton}
-          onPress={() => setShowWriteModal(true)}
+          onPress={() => {
+            resetNewPostForm();
+            setShowWriteModal(true);
+          }}
         >
           <Text style={styles.writeButtonText}>✏️</Text>
         </TouchableOpacity>
@@ -915,81 +1251,46 @@ export function Community() {
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.categoryFilterRow}
+          >
+            {COMMUNITY_CATEGORY_FILTERS.map(category => (
+              <TouchableOpacity
+                key={`filter-${category}`}
+                style={[
+                  styles.categoryFilterChip,
+                  activeCategoryFilter === category && styles.categoryFilterChipActive,
+                ]}
+                onPress={() => setActiveCategoryFilter(category)}
+              >
+                <Text
+                  style={[
+                    styles.categoryFilterChipText,
+                    activeCategoryFilter === category && styles.categoryFilterChipTextActive,
+                  ]}
+                >
+                  {category}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
 
           {/* Posts */}
-          {filteredPosts.map(post => (
-            <TouchableOpacity
-              key={post.id}
-              onPress={() => {
-                setSelectedPost(post);
-                loadComments(post.id);
-                setShowPostDetailModal(true);
-              }}
-            >
-              <Card style={styles.postCard}>
-                <View style={styles.postHeader}>
-                  <View style={styles.postAuthorContainer}>
-                    {userProfileImages[post.authorId] ? (
-                      <Image 
-                        source={{ uri: userProfileImages[post.authorId] }} 
-                        style={styles.postAuthorAvatar}
-                      />
-                    ) : (
-                      <View style={styles.postAuthorAvatarPlaceholder}>
-                        <Text style={styles.postAuthorAvatarText}>
-                          {post.author?.charAt(0)?.toUpperCase() || '👤'}
-                        </Text>
-                      </View>
-                    )}
-                    <View>
-                      <TouchableOpacity
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          setSelectedUser({ id: post.authorId, name: post.author });
-                          setShowProfileModal(true);
-                        }}
-                      >
-                        <Text style={styles.postAuthor}>{post.author}</Text>
-                      </TouchableOpacity>
-                      <Text style={styles.postTime}>
-                        {post.displayDate}
-                        {post.time ? ` · ${post.time}` : ''}
-                      </Text>
-                    </View>
-                  </View>
-                      <Badge>{post.category}</Badge>
-                </View>
-
-                <Text style={styles.postTitle}>{post.title}</Text>
-                <Text style={styles.postContent} numberOfLines={2}>
-                  {post.content}
-                </Text>
-
-                {post.image && (
-                  <Image source={{ uri: post.image }} style={styles.postImage} />
-                )}
-
-                <View style={styles.postFooter}>
-                  <TouchableOpacity
-                    style={styles.likeButton}
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      handleLike(post.id);
-                    }}
-                  >
-                    <Text style={styles.likeIcon}>
-                      {post.likedBy.includes(userId) ? '❤️' : '🤍'}
-                    </Text>
-                    <Text style={styles.likeCount}>{post.likes}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.commentButton}>
-                    <Text style={styles.commentIcon}>💬</Text>
-                    <Text style={styles.commentCount}>{post.comments}</Text>
-                  </View>
-                </View>
-              </Card>
-            </TouchableOpacity>
-          ))}
+          {loadingPosts ? (
+            <View style={styles.postsLoadingState}>
+              <ActivityIndicator size="small" color="#6366F1" />
+              <Text style={styles.postsLoadingText}>게시글을 불러오는 중입니다...</Text>
+            </View>
+          ) : sortedPosts.length === 0 ? (
+            <View style={styles.postsEmptyState}>
+              <Text style={styles.postsEmptyText}>표시할 게시글이 없습니다.</Text>
+              <Text style={styles.postsEmptySubtext}>새 글을 작성하거나 검색어를 변경해보세요.</Text>
+            </View>
+          ) : (
+            sortedPosts.map(renderPostCard)
+          )}
         </ScrollView>
       ) : (
         <ScrollView 
@@ -1078,12 +1379,50 @@ export function Community() {
         </ScrollView>
       )}
 
+      {/* Post Image Action Sheet */}
+      <Modal
+        visible={showPostImageActionSheet}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPostImageActionSheet(false)}
+      >
+        <View style={styles.actionSheetOverlay}>
+          <View style={styles.actionSheetContainer}>
+            <Text style={styles.actionSheetTitle}>사진 업로드</Text>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowPostImageActionSheet(false);
+                pickPostImageFromCamera();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>📷 카메라로 촬영</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowPostImageActionSheet(false);
+                pickPostImageFromLibrary();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>🖼 갤러리에서 선택</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionSheetButton, styles.actionSheetCancelButton]}
+              onPress={() => setShowPostImageActionSheet(false)}
+            >
+              <Text style={[styles.actionSheetButtonText, styles.actionSheetCancelButtonText]}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Write Post Modal */}
       <Modal
         visible={showWriteModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setShowWriteModal(false)}
+        onRequestClose={closeWriteModal}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1130,13 +1469,36 @@ export function Community() {
               onChangeText={text => setNewPost({ ...newPost, content: text })}
             />
 
+            <Text style={styles.modalLabel}>사진 첨부 (최대 3장)</Text>
+            <View style={styles.imageGrid}>
+              {postImages.map((image, index) => (
+                <View key={`${image.uri}-${index}`} style={styles.imageWrapper}>
+                  <Image source={{ uri: image.uri }} style={styles.uploadedImage} />
+                  <TouchableOpacity
+                    style={styles.removeImageButton}
+                    onPress={() => removePostImage(index)}
+                  >
+                    <Text style={styles.removeImageText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {postImages.length < 3 && (
+                <TouchableOpacity
+                  style={styles.addImageButton}
+                  onPress={() => setShowPostImageActionSheet(true)}
+                >
+                  <Text style={styles.addImageText}>+</Text>
+                  <Text style={styles.addImageLabel}>
+                    {postImages.length}/3
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <View style={styles.modalButtons}>
               <Button
                 title="취소"
-                onPress={() => {
-                  setShowWriteModal(false);
-                  setNewPost({ title: '', content: '', category: '운동' });
-                }}
+                onPress={closeWriteModal}
               />
               <Button
                 title="작성하기"
@@ -1160,55 +1522,32 @@ export function Community() {
                     content: newPost.content,
                   };
 
-                  // Try backend first
+                  const uploadFiles = postImages.map((asset, index) => ({
+                    uri: asset.uri,
+                    name:
+                      asset.fileName ||
+                      `post-${Date.now()}-${index}.${asset.mimeType?.split('/')?.[1] ?? 'jpg'}`,
+                    type: asset.mimeType || 'image/jpeg',
+                  }));
+
                   try {
-                    const res = await api.post(API_CONFIG.ENDPOINTS.CREATE_POST, payload);
-                    if (res?.success) {
-                      // Backend success, also save locally
-                      const createdAtIso = new Date().toISOString();
-                      const profileImageUrl =
-                        currentUser.profileImage ||
-                        currentUser.profileImageUrl ||
-                        userProfileImages[userId] ||
-                        null;
-                      const post: Post = {
-                        id: Date.now().toString(),
-                        author: currentUser.name,
-                        authorId: userId,
-                        authorProfileImage: profileImageUrl,
-                        category: newPost.category,
-                        title: newPost.title,
-                        content: newPost.content,
-                        likes: 0,
-                        likedBy: [],
-                        comments: 0,
-                        createdAt: createdAtIso,
-                        time: formatPostDate(createdAtIso),
-                      };
-                      setPosts([post, ...posts]);
-                      AsyncStorage.setItem('communityPosts', JSON.stringify([post, ...posts]));
-                      if (profileImageUrl) {
-                        setUserProfileImages(prev => ({
-                          ...prev,
-                          [userId]: profileImageUrl,
-                        }));
-                      }
-                      setShowWriteModal(false);
-                      setNewPost({ title: '', content: '', category: '운동' });
-                      Alert.alert('완료', '게시글이 작성되었습니다');
-                      return;
-                    }
+                    await createPost(payload, uploadFiles);
+                    await refreshPosts();
+                    closeWriteModal();
+                    Alert.alert('완료', '게시글이 작성되었습니다');
+                    return;
                   } catch (error) {
                     console.error('Failed to create post:', error);
+                    Alert.alert('알림', '서버에 게시글을 저장하지 못했습니다. 로컬에 임시로 저장합니다.');
                   }
 
-                  // Fallback to local only
                   const createdAtIso = new Date().toISOString();
                   const profileImageUrl =
                     currentUser.profileImage ||
                     currentUser.profileImageUrl ||
                     userProfileImages[userId] ||
                     null;
+                  const fallbackImageUris = uploadFiles.map(file => file.uri);
                   const post: Post = {
                     id: Date.now().toString(),
                     author: currentUser.name,
@@ -1222,18 +1561,22 @@ export function Community() {
                     comments: 0,
                     createdAt: createdAtIso,
                     time: formatPostDate(createdAtIso),
+                    imageUrls: fallbackImageUris,
+                    thumbnail: fallbackImageUris[0] || null,
                   };
-                  setPosts([post, ...posts]);
-                  AsyncStorage.setItem('communityPosts', JSON.stringify([post, ...posts]));
+                  setPosts(prev => {
+                    const next = [post, ...prev];
+                    AsyncStorage.setItem('communityPosts', JSON.stringify(next));
+                    return next;
+                  });
                   if (profileImageUrl) {
                     setUserProfileImages(prev => ({
                       ...prev,
                       [userId]: profileImageUrl,
                     }));
                   }
-                  setShowWriteModal(false);
-                  setNewPost({ title: '', content: '', category: '운동' });
-                  Alert.alert('완료', '게시글이 작성되었습니다');
+                  closeWriteModal();
+                  Alert.alert('완료', '게시글이 로컬에 저장되었습니다');
                 }}
               />
             </View>
@@ -1333,9 +1676,24 @@ export function Community() {
                     <Text style={styles.postTitle}>{selectedPost.title}</Text>
                     <Text style={styles.postDetailContent}>{selectedPost.content}</Text>
 
-                    {selectedPost.image && (
-                      <Image source={{ uri: selectedPost.image }} style={styles.postImage} />
-                    )}
+                    {selectedPost.imageUrls && selectedPost.imageUrls.length > 0 ? (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.postDetailImagesScroll}
+                        contentContainerStyle={styles.postDetailImagesContent}
+                      >
+                        {selectedPost.imageUrls.map((uri, index) => (
+                          <Image
+                            key={`${uri}-${index}`}
+                            source={{ uri }}
+                            style={styles.postDetailImage}
+                          />
+                        ))}
+                      </ScrollView>
+                    ) : selectedPost.thumbnail ? (
+                      <Image source={{ uri: selectedPost.thumbnail }} style={styles.postDetailImageSingle} />
+                    ) : null}
 
                     <View style={styles.postFooter}>
                       <TouchableOpacity
@@ -1443,14 +1801,14 @@ export function Community() {
                     <Image source={{ uri: image }} style={styles.uploadedImage} />
                     <TouchableOpacity
                       style={styles.removeImageButton}
-                      onPress={() => removeImage(index)}
+                      onPress={() => removeCompetitionImage(index)}
                     >
                       <Text style={styles.removeImageText}>✕</Text>
                     </TouchableOpacity>
                   </View>
                 ))}
                 {competitionImages.length < 3 && (
-                  <TouchableOpacity style={styles.addImageButton} onPress={pickImage}>
+                  <TouchableOpacity style={styles.addImageButton} onPress={pickCompetitionImage}>
                     <Text style={styles.addImageText}>+</Text>
                     <Text style={styles.addImageLabel}>
                       {competitionImages.length}/3
@@ -1660,6 +2018,83 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
+  categoryFilterRow: {
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  categoryFilterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#d4d4d8',
+    backgroundColor: '#fff',
+    marginRight: 8,
+  },
+  categoryFilterChipActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  categoryFilterChipText: {
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  categoryFilterChipTextActive: {
+    color: '#fff',
+  },
+  categorySection: {
+    marginBottom: 24,
+  },
+  categoryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  categoryHeader: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111',
+  },
+  categoryCount: {
+    fontSize: 13,
+    color: '#9E9E9E',
+  },
+  postsEmptyState: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    paddingVertical: 40,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  postsEmptyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 8,
+  },
+  postsEmptySubtext: {
+    fontSize: 13,
+    color: '#9E9E9E',
+  },
+  postsLoadingState: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    paddingVertical: 32,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  postsLoadingText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#6b7280',
+  },
   postCard: {
     marginBottom: 12,
   },
@@ -1716,6 +2151,24 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 8,
     marginBottom: 12,
+  },
+  postImageWrapper: {
+    position: 'relative',
+    marginBottom: 12,
+  },
+  postImageBadge: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  postImageBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   postFooter: {
     flexDirection: 'row',
@@ -1965,6 +2418,24 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 12,
   },
+  postDetailImagesScroll: {
+    marginTop: 8,
+  },
+  postDetailImagesContent: {
+    paddingVertical: 4,
+    gap: 12,
+  },
+  postDetailImage: {
+    width: 240,
+    height: 240,
+    borderRadius: 12,
+  },
+  postDetailImageSingle: {
+    width: '100%',
+    height: 240,
+    borderRadius: 12,
+    marginTop: 8,
+  },
   commentsSection: {
     marginTop: 16,
   },
@@ -2098,6 +2569,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#007AFF',
     marginTop: 4,
+  },
+  actionSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  actionSheetContainer: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 16,
+  },
+  actionSheetTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    paddingVertical: 16,
+    textAlign: 'center',
+    color: '#111',
+  },
+  actionSheetButton: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  actionSheetButtonText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  actionSheetCancelButton: {
+    borderBottomWidth: 0,
+  },
+  actionSheetCancelButtonText: {
+    color: '#ff3b30',
+    fontWeight: '600',
   },
   profileModalHeader: {
     flexDirection: 'row',

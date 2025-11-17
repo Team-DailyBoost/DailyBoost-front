@@ -152,72 +152,61 @@ export class FoodService {
 
   /**
    * Get recipe recommendation based on user input
-   * 백엔드: GET /api/food/recipe/recommend (⚠️ 비표준: GET with @RequestBody)
-   * 
-   * 문제: 백엔드가 GET with @RequestBody를 사용하지만, HTTP 표준상 GET 요청에는 body를 보낼 수 없음
-   * 해결: POST로만 시도 (React Native는 GET with body를 지원하지 않음)
+   * 백엔드: POST /api/food/recipe/recommend
    * 
    * Note: Requires authentication
    */
-  static async getRecipeRecommendation(userInput: string) {
+  static async getRecipeRecommendation(userInput: string): Promise<ServiceResult<FoodRecommendation>> {
     try {
-      // POST로 시도 (백엔드가 POST도 허용하는 경우)
-      const postResponse = await api.post<FoodRecommendation>(
+      const response = await api.post<FoodRecommendation>(
         API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
         { userInput } as RecipeRequest
       );
       
-      if (postResponse.success) {
-        return postResponse;
+      if (response.success && response.data) {
+        return {
+          success: true,
+          data: response.data,
+        };
       }
       
-      // POST 실패 시 쿼리 파라미터로 시도
-      try {
-        const queryResponse = await api.get<FoodRecommendation>(
-          API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
-          { userInput }
-        );
-        if (queryResponse.success) {
-          return queryResponse;
-        }
-      } catch (queryError) {
-        // 쿼리 파라미터도 실패
-      }
-
       // Fallback via WebView proxy
       try {
-        const proxyPost = await WebViewManager.requestApi({
+        const proxy = await WebViewManager.requestApi({
           path: API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
           method: 'POST',
           headers: { 'Accept': 'application/json' },
           body: { userInput },
         });
-        if (proxyPost.status >= 200 && proxyPost.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodRecommendation | any>(proxyPost.data);
-          return { success: true, data: normalized } as any;
+        if (proxy.status >= 200 && proxy.status < 300) {
+          const normalized = FoodService.normalizeValue<FoodRecommendation>(proxy.data);
+          return { 
+            success: true, 
+            data: normalized 
+          };
         }
-      } catch {}
-      try {
-        const proxyGet = await WebViewManager.requestApi({
-          path: API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          query: { userInput },
-        });
-        if (proxyGet.status >= 200 && proxyGet.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodRecommendation | any>(proxyGet.data);
-          return { success: true, data: normalized } as any;
-        }
-      } catch {}
+      } catch (proxyError) {
+        // WebView fallback 실패
+      }
       
-      return { 
-        success: false, 
-        error: postResponse.error || '레시피 추천 실패. 백엔드 API가 GET 요청에 body를 요구하지만, HTTP 표준상 불가능합니다. 백엔드를 POST로 변경하거나 쿼리 파라미터를 사용하도록 수정이 필요합니다.' 
+      return {
+        success: false,
+        error: response.error || '레시피 추천에 실패했습니다.',
       };
     } catch (error: any) {
-      return { 
-        success: false, 
-        error: error.message || '레시피 추천 실패. 백엔드 API가 GET 요청에 body를 요구하지만, HTTP 표준상 불가능합니다.' 
+      const errorMessage = error.message || '레시피 추천 중 오류가 발생했습니다.';
+      
+      // 인증 오류인 경우
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        return {
+          success: false,
+          error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.',
+        };
+      }
+      
+      return {
+        success: false,
+        error: errorMessage,
       };
     }
   }

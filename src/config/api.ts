@@ -24,7 +24,7 @@ export const API_CONFIG = {
     FOOD_TODAY: '/api/food/today',  // GET /api/food/today
     FOOD_WEEKLY: '/api/food/weekly',  // GET /api/food/weekly
     FOOD_RECOMMEND: '/api/food/recommend',  // GET /api/food/recommend (인증 필요, body 없음)
-    FOOD_RECIPE_RECOMMEND: '/api/food/recipe/recommend',  // GET /api/food/recipe/recommend (인증 필요, @RequestBody 있음)
+    FOOD_RECIPE_RECOMMEND: '/api/food/recipe/recommend',  // POST /api/food/recipe/recommend (인증 필요, body: RecipeRequest)
     FOOD_SEARCH: '/api/food',  // GET /api/food?keyword=...
     FOOD_REGISTER: '/api/food/register',  // POST /api/food/register/{foodId}
     FOOD_UNREGISTER: '/api/food/unregister',  // POST /api/food/unregister/{foodId}

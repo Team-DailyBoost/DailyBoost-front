@@ -5,6 +5,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { StatusBar, Platform, View } from 'react-native';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Feather as Icon } from '@expo/vector-icons';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Dashboard } from './src/react-native/screens/Dashboard';
 import { FoodLogger } from './src/react-native/screens/FoodLogger';
@@ -32,6 +33,8 @@ function AuthNavigator({ onLoggedIn }: { onLoggedIn: () => void }) {
 
 // 메인 탭 네비게이터 (로그인 후 화면)
 function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
+  const insets = useSafeAreaInsets();
+  
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -67,8 +70,8 @@ function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
         tabBarInactiveTintColor: '#9ca3af',
         headerShown: false,
         tabBarStyle: {
-          height: 60,
-          paddingBottom: 8,
+          height: 60 + insets.bottom, // 하단 safe area 높이 추가
+          paddingBottom: insets.bottom, // 하단 safe area만큼 패딩 추가 (시스템 네비게이션 바 위에 배치)
           paddingTop: 8,
           borderTopWidth: 1,
           borderTopColor: '#e5e7eb',
@@ -96,10 +99,12 @@ export default function App() {
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    // Android 네비게이션 바 숨기기
+    // Android 네비게이션 바 표시 (앱 네비게이션 바 위에 배치하기 위해)
     if (Platform.OS === 'android') {
       try {
-        NavigationBar.setVisibilityAsync('hidden');
+        NavigationBar.setVisibilityAsync('visible');
+        // 네비게이션 바 색상 설정 (선택사항)
+        NavigationBar.setBackgroundColorAsync('#ffffff');
       } catch {}
     }
   }, []);
@@ -147,7 +152,7 @@ export default function App() {
   }
 
   return (
-    <>
+    <SafeAreaProvider>
       <StatusBar 
         barStyle="dark-content" 
         backgroundColor="#fff" 
@@ -196,6 +201,6 @@ export default function App() {
         </Stack.Navigator>
       </NavigationContainer>
       {isAuthed && <BackgroundWebView />}
-    </>
+    </SafeAreaProvider>
   );
 }

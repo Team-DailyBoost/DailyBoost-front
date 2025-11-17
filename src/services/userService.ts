@@ -6,7 +6,8 @@ import {
   unregisterUser as unregisterUserApi, 
   recoverUserAccount as recoverUserAccountApi 
 } from '../api/users';
-import type { UserRequest, UserUpdateRequest, VerifyCodeRequest } from '../api/users';
+import type { UserRequest, UserUpdateRequest, VerifyCodeRequest, UserProfileUploadFile } from '../api/users';
+import { sendHtmlEmail } from '../api/email';
 
 /**
  * User profile data interface
@@ -117,6 +118,20 @@ export class UserService {
       return { success: false, error: error?.message || '계정 복구 실패' };
     }
   }
+
+  /**
+   * Send account recovery email
+   * 백엔드: POST /api/email/htmlEmail
+   */
+  static async sendRecoveryEmail(email: string) {
+    try {
+      const result = await sendHtmlEmail({ emailAddr: email });
+      return { success: true, data: result };
+    } catch (error: any) {
+      console.error('계정 복구 이메일 전송 실패:', error);
+      return { success: false, error: error?.message || '이메일 전송에 실패했습니다.' };
+    }
+  }
   
   /**
    * Update user profile
@@ -124,9 +139,9 @@ export class UserService {
    * 
    * OpenAPI 명세에 맞춰 수정됨
    */
-  static async updateProfile(request: UserUpdateRequest) {
+  static async updateProfile(request: UserUpdateRequest, file?: UserProfileUploadFile) {
     try {
-      const result = await updateUserInfoApi(request);
+      const result = await updateUserInfoApi(request, file);
       return { success: true, data: result };
     } catch (error: any) {
       console.error('프로필 수정 실패:', error);

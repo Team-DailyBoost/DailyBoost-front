@@ -156,29 +156,17 @@ export async function searchFoodByKeyword(keyword: string): Promise<FoodResponse
 
 /**
  * 레시피 추천
- * GET /api/food/recipe/recommend
+ * POST /api/food/recipe/recommend
  * 
  * Swagger 명세:
  * - operationId: recommendRecipe_1
  * - requestBody: RecipeRequest (required)
  * - response: ApiFoodRecommendation (value는 FoodRecommendation)
  * 
- * 주의: 백엔드가 GET with @RequestBody를 사용하는 비표준 설계입니다.
- * HTTP 표준상 GET 요청에는 body를 보낼 수 없으므로, POST로 시도합니다.
+ * 백엔드가 @GetMapping에 @RequestBody를 사용하지만, HTTP 표준상 POST로 요청합니다.
  */
 export async function recommendRecipe(request: RecipeRequest): Promise<FoodRecommendation> {
-  try {
-    // POST로 먼저 시도 (백엔드가 POST도 허용하는 경우)
-    return requestWithWebViewFallback<FoodRecommendation>('POST', '/api/food/recipe/recommend', {
-      body: request,
-    });
-  } catch (error: any) {
-    // POST 실패 시 GET with query parameters로 fallback 시도
-    if (error.message?.includes('405') || error.message?.includes('Method Not Allowed')) {
-      return requestWithWebViewFallback<FoodRecommendation>('GET', '/api/food/recipe/recommend', {
-        query: { userInput: request.userInput },
-      });
-    }
-    throw error;
-  }
+  return requestWithWebViewFallback<FoodRecommendation>('POST', '/api/food/recipe/recommend', {
+    body: request,
+  });
 }

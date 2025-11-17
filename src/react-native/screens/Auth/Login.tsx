@@ -88,6 +88,13 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   const [healthGoal, setHealthGoal] = useState<GoalType>('GENERAL_HEALTH_MAINTENANCE');
   const [submittingHealth, setSubmittingHealth] = useState(false);
   const [healthFlagKey, setHealthFlagKey] = useState<string>(() => HEALTH_INFO_FLAG_PREFIX);
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryStep, setRecoveryStep] = useState<'email' | 'code' | 'done'>('email');
+  const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
+  const [verifyingRecoveryCode, setVerifyingRecoveryCode] = useState(false);
+  const [resendCountdown, setResendCountdown] = useState(0);
   const webViewRef = useRef<WebView | null>(null);
   const currentProviderRef = useRef<'kakao' | 'naver' | null>(null);
   const handledAuthRef = useRef(false);
@@ -109,6 +116,33 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (resendCountdown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCountdown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCountdown]);
+
+  const resetRecoveryFlow = useCallback(() => {
+    setRecoveryEmail('');
+    setRecoveryCode('');
+    setRecoveryStep('email');
+    setResendCountdown(0);
+    setSendingRecoveryEmail(false);
+    setVerifyingRecoveryCode(false);
+  }, []);
+
+  const closeRecoveryModal = useCallback(() => {
+    setShowRecoveryModal(false);
+    resetRecoveryFlow();
+  }, [resetRecoveryFlow]);
+
+  const openRecoveryModal = useCallback(() => {
+    resetRecoveryFlow();
+    setShowRecoveryModal(true);
+  }, [resetRecoveryFlow]);
 
   const ensureHealthInfoFlow = useCallback(async (overrideKey?: string) => {
     const keyToCheck = overrideKey ?? healthFlagKey;
@@ -354,6 +388,72 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     }
   };
 
+  const handleSendRecoveryEmail = useCallback(async () => {
+    const trimmedEmail = recoveryEmail.trim();
+    if (!trimmedEmail || !trimmedEmail.includes('@')) {
+      Alert.alert('알림', '유효한 이메일 주소를 입력하세요.');
+      return;
+    }
+
+    try {
+      setSendingRecoveryEmail(true);
+      const response = await UserService.sendRecoveryEmail(trimmedEmail);
+      setSendingRecoveryEmail(false);
+      if (!response.success) {
+        Alert.alert('전송 실패', response.error || '이메일 전송에 실패했습니다.');
+        return;
+      }
+      Alert.alert('이메일 전송', '입력한 이메일로 인증 코드를 전송했습니다. 5분 이내에 코드를 입력해주세요.');
+      setRecoveryStep('code');
+      setResendCountdown(30);
+    } catch (error) {
+      setSendingRecoveryEmail(false);
+      Alert.alert('전송 실패', '이메일 전송 중 오류가 발생했습니다.');
+    }
+  }, [recoveryEmail]);
+
+  const handleVerifyRecoveryCode = useCallback(async () => {
+    const trimmedEmail = recoveryEmail.trim();
+    if (!trimmedEmail) {
+      Alert.alert('알림', '계정 이메일을 입력하세요.');
+      return;
+    }
+    const trimmedCode = recoveryCode.trim();
+    if (!trimmedCode) {
+      Alert.alert('알림', '이메일로 전송된 인증 코드를 입력하세요.');
+      return;
+    }
+
+    try {
+      setVerifyingRecoveryCode(true);
+      const response = await UserService.recoverAccount({
+        email: trimmedEmail,
+        inputCode: trimmedCode,
+      });
+      setVerifyingRecoveryCode(false);
+      if (!response.success) {
+        Alert.alert('복구 실패', response.error || '인증 코드가 일치하지 않거나 만료되었습니다.');
+        return;
+      }
+      Alert.alert('복구 완료', response.data?.message || '계정이 복구되었습니다. 다시 로그인해주세요.', [
+        {
+          text: '확인',
+          onPress: () => {
+            closeRecoveryModal();
+          },
+        },
+      ]);
+    } catch (error) {
+      setVerifyingRecoveryCode(false);
+      Alert.alert('복구 실패', '계정 복구 중 오류가 발생했습니다.');
+    }
+  }, [recoveryEmail, recoveryCode, closeRecoveryModal]);
+
+  const handleResendRecoveryEmail = useCallback(() => {
+    if (resendCountdown > 0 || sendingRecoveryEmail) return;
+    handleSendRecoveryEmail();
+  }, [handleSendRecoveryEmail, resendCountdown, sendingRecoveryEmail]);
+
   const handleSocialLogin = (provider: 'kakao' | 'naver') => {
     handledAuthRef.current = false;
     setCurrentProvider(provider);
@@ -453,6 +553,13 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
             )}
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={styles.recoveryLinkWrapper}
+            onPress={openRecoveryModal}
+          >
+            <Text style={styles.recoveryLinkText}>계정을 복구하고 싶으신가요?</Text>
+          </TouchableOpacity>
+
           <View style={{ height: 16 }} />
 
           <Text style={styles.sectionLabel}>소셜 로그인</Text>
@@ -483,6 +590,99 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           ))}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={showRecoveryModal}
+        transparent
+        animationType="fade"
+        onRequestClose={closeRecoveryModal}
+      >
+        <View style={styles.recoveryModalOverlay}>
+          <View style={styles.recoveryModalContent}>
+            <Text style={styles.recoveryModalTitle}>계정 복구</Text>
+            <Text style={styles.recoveryModalSubtitle}>
+              삭제되었거나 휴면 처리된 계정을 다시 활성화하려면 이메일 인증이 필요합니다.
+            </Text>
+
+            <Text style={styles.recoveryLabel}>계정 이메일</Text>
+            <TextInput
+              style={styles.recoveryInput}
+              placeholder="example@dailyboost.app"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              value={recoveryEmail}
+              onChangeText={setRecoveryEmail}
+              editable={!sendingRecoveryEmail && recoveryStep === 'email'}
+            />
+
+            {recoveryStep === 'email' && (
+              <TouchableOpacity
+                style={[
+                  styles.recoveryPrimaryButton,
+                  (sendingRecoveryEmail || !recoveryEmail.trim()) && styles.buttonDisabled,
+                ]}
+                onPress={handleSendRecoveryEmail}
+                disabled={sendingRecoveryEmail}
+              >
+                {sendingRecoveryEmail ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.recoveryPrimaryButtonText}>인증 코드 보내기</Text>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {recoveryStep !== 'email' && (
+              <>
+                <Text style={styles.recoveryInfoText}>
+                  이메일로 받은 4자리 코드를 입력하면 계정 상태가 복구됩니다.
+                </Text>
+                <TextInput
+                  style={styles.recoveryInput}
+                  placeholder="1234"
+                  keyboardType="number-pad"
+                  value={recoveryCode}
+                  onChangeText={setRecoveryCode}
+                  maxLength={4}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.recoveryPrimaryButton,
+                    (verifyingRecoveryCode || recoveryCode.trim().length < 4) && styles.buttonDisabled,
+                  ]}
+                  onPress={handleVerifyRecoveryCode}
+                  disabled={verifyingRecoveryCode}
+                >
+                  {verifyingRecoveryCode ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.recoveryPrimaryButtonText}>코드 확인</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.recoverySecondaryButton,
+                    (resendCountdown > 0 || sendingRecoveryEmail) && styles.buttonDisabled,
+                  ]}
+                  onPress={handleResendRecoveryEmail}
+                  disabled={resendCountdown > 0 || sendingRecoveryEmail}
+                >
+                  <Text style={styles.recoverySecondaryButtonText}>
+                    인증 코드 재전송{resendCountdown > 0 ? ` (${resendCountdown}s)` : ''}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            <TouchableOpacity
+              style={styles.recoveryCloseButton}
+              onPress={closeRecoveryModal}
+            >
+              <Text style={styles.recoveryCloseButtonText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={showHealthModal}
@@ -730,6 +930,97 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#fff',
     fontWeight: '600',
+  },
+  recoveryLinkWrapper: {
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  recoveryLinkText: {
+    fontSize: 14,
+    color: '#2563eb',
+    textDecorationLine: 'underline',
+  },
+  recoveryModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  recoveryModalContent: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+  },
+  recoveryModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    color: '#111827',
+  },
+  recoveryModalSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  recoveryLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  recoveryInput: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 44,
+    fontSize: 15,
+    marginBottom: 12,
+  },
+  recoveryPrimaryButton: {
+    backgroundColor: '#2563eb',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  recoveryPrimaryButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  recoverySecondaryButton: {
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+  },
+  recoverySecondaryButtonText: {
+    color: '#1f2937',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  recoveryInfoText: {
+    fontSize: 13,
+    color: '#4b5563',
+    marginBottom: 4,
+  },
+  recoveryCloseButton: {
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  recoveryCloseButtonText: {
+    color: '#6b7280',
+    fontSize: 15,
   },
   healthSubmitButton: {
     marginTop: 24,

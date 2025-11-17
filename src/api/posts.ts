@@ -128,8 +128,38 @@ export async function searchPosts(title: string): Promise<SearchPostResponse[]> 
  * 게시글 생성
  * POST /api/post/create
  */
-export async function createPost(request: PostCreateRequest): Promise<MessageResponse> {
-  const response = await client.post<ApiResponse<MessageResponse>>('/api/post/create', request);
+export interface PostImageUpload {
+  uri: string;
+  name?: string;
+  type?: string;
+}
+
+export async function createPost(
+  request: PostCreateRequest,
+  files?: PostImageUpload[],
+): Promise<MessageResponse> {
+  const formData = new FormData();
+  formData.append('postCreateRequest', JSON.stringify(request));
+
+  if (files && files.length > 0) {
+    files.forEach((file, index) => {
+      if (!file?.uri) return;
+      formData.append(
+        'files',
+        {
+          uri: file.uri,
+          name: file.name || `post-${Date.now()}-${index}.jpg`,
+          type: file.type || 'image/jpeg',
+        } as any,
+      );
+    });
+  }
+
+  const response = await client.post<ApiResponse<MessageResponse>>('/api/post/create', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
   return extractApiValue(response);
 }
 

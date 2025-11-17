@@ -8,6 +8,9 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather as Icon } from '@expo/vector-icons';
@@ -66,6 +69,49 @@ const DAILY_GOAL = {
   fat: 67,
 };
 
+// TextInput을 컴포넌트 외부로 이동하여 리렌더링 방지 (한글/영어 입력 시 커서 해제 문제 해결)
+const RecipeTextInputComponent = React.memo(
+  React.forwardRef<TextInput, {
+    value: string;
+    onChangeText: (text: string) => void;
+    onFocus: () => void;
+    editable: boolean;
+  }>(({ value, onChangeText, onFocus, editable }, ref) => (
+    <TextInput
+      ref={ref}
+      style={styles.recipeInput}
+      placeholder="예: 닭가슴살, 토마토, 양파, 올리브오일"
+      placeholderTextColor="#9E9E9E"
+      value={value}
+      onChangeText={onChangeText}
+      onFocus={onFocus}
+      multiline
+      blurOnSubmit={false}
+      returnKeyType="default"
+      keyboardType="default"
+      textContentType="none"
+      autoCorrect={false}
+      autoCapitalize="none"
+      editable={editable}
+      selectTextOnFocus={false}
+      importantForAutofill="no"
+      underlineColorAndroid="transparent"
+      textBreakStrategy="simple"
+    />
+  )),
+  // value와 editable을 비교하되, onChangeText와 onFocus는 useCallback으로 메모이제이션되어 있어 참조가 변경되지 않음
+  // key prop이 고정되어 있어 value가 변경되어도 TextInput이 재생성되지 않음
+  (prevProps, nextProps) => {
+    // value가 변경되어도 리렌더링은 발생하지만, key가 고정되어 있어 TextInput은 재생성되지 않음
+    return (
+      prevProps.value === nextProps.value &&
+      prevProps.editable === nextProps.editable
+    );
+  }
+);
+
+RecipeTextInputComponent.displayName = 'RecipeTextInput';
+
 export function FoodLogger() {
   const [activeTab, setActiveTab] = useState<TabType>('record');
   const [todaysFoods, setTodaysFoods] = useState<FoodEntry[]>([]);
@@ -76,8 +122,66 @@ export function FoodLogger() {
   const [recommendedMeals, setRecommendedMeals] = useState<RecommendedMeal[]>([]);
   const [isFallbackRecommendations, setIsFallbackRecommendations] = useState(false);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const [processingRecommendIds, setProcessingRecommendIds] = useState<Record<string, boolean>>({});
   const recipeInputRef = useRef<TextInput>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
   const fallbackFoodNoticeShown = useRef(false);
+
+  // 레시피 입력 핸들러 메모이제이션 (커서 해제 방지)
+  // 한글/영어 입력 시 커서가 해제되지 않도록 즉시 상태 업데이트
+  const handleRecipeInputChange = useCallback((text: string) => {
+    // 상태 업데이트를 즉시 실행하여 입력 시 커서 유지
+    setRecipeInput(text);
+  }, []);
+
+  // TextInput 포커스 시 스크롤 처리
+  const handleRecipeInputFocus = useCallback(() => {
+    // 키보드가 올라올 때까지 약간의 지연 후 스크롤
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, Platform.OS === 'ios' ? 250 : 100);
+  }, []);
+
+  // 키보드 이벤트 리스너 (커서 유지 및 스크롤 개선)
+  useEffect(() => {
+    const keyboardWillShowListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        // 키보드가 올라올 때 TextInput이 보이도록 스크롤
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
+    );
+
+    return () => {
+      keyboardWillShowListener.remove();
+    };
+  }, []);
+
+  const removeMealFromRecommendations = useCallback((meal: RecommendedMeal) => {
+    setRecommendedMeals(prev =>
+      prev.filter(item => (item.id || item.name) !== (meal.id || meal.name))
+    );
+  }, []);
+
+  const markRecommendProcessing = useCallback((key: string) => {
+    setProcessingRecommendIds(prev => ({
+      ...prev,
+      [key]: true,
+    }));
+  }, []);
+
+  const unmarkRecommendProcessing = useCallback((key: string) => {
+    setProcessingRecommendIds(prev => {
+      if (!(key in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -262,12 +366,11 @@ export function FoodLogger() {
 
   const handleAddRecommendedMeal = useCallback(
     async (meal: RecommendedMeal) => {
-      if (processingMealId) {
+      const processingKey = meal.id || meal.name;
+      if (processingRecommendIds[processingKey]) {
         return;
       }
-
-      const processingKey = meal.id || meal.name;
-      setProcessingMealId(processingKey);
+      markRecommendProcessing(processingKey);
 
       try {
         if (isFallbackRecommendations) {
@@ -277,10 +380,7 @@ export function FoodLogger() {
             cacheTotalsForEntries(next);
             return next;
           });
-          Alert.alert(
-            '추가됨',
-            `${meal.name}을(를) 임시로 추가했습니다.\nAI 추천 서버가 복구되면 다시 시도해주세요.`
-          );
+          removeMealFromRecommendations(meal);
           return;
         }
 
@@ -293,7 +393,7 @@ export function FoodLogger() {
           }
 
           await loadTodayFoods({ syncWeekly: true });
-          Alert.alert('추가됨', `${meal.name}이 식단에 추가되었습니다.`);
+          removeMealFromRecommendations(meal);
         } else {
           const entry = createLocalEntryFromRecommendation(meal);
           setTodaysFoods(prev => {
@@ -301,10 +401,7 @@ export function FoodLogger() {
             cacheTotalsForEntries(next);
             return next;
           });
-          Alert.alert(
-            '로컬에 추가됨',
-            `${meal.name}을(를) 임시로 추가했습니다.\n네트워크 연결 후 다시 시도하세요.`
-          );
+          removeMealFromRecommendations(meal);
         }
       } catch (error: any) {
         console.warn('식단 추천 추가 실패, 로컬 저장으로 대체:', error);
@@ -314,15 +411,25 @@ export function FoodLogger() {
           cacheTotalsForEntries(next);
           return next;
         });
+        removeMealFromRecommendations(meal);
         Alert.alert(
           '임시로 추가됨',
           `${meal.name}을(를) 로컬에 저장했습니다.\nAI 서버가 복구되면 다시 시도해주세요.`
         );
       } finally {
-        setProcessingMealId(null);
+        unmarkRecommendProcessing(processingKey);
       }
     },
-    [cacheTotalsForEntries, isFallbackRecommendations, loadTodayFoods, processingMealId, resolveFoodIdForRecommendation]
+    [
+      cacheTotalsForEntries,
+      isFallbackRecommendations,
+      loadTodayFoods,
+      markRecommendProcessing,
+      processingRecommendIds,
+      removeMealFromRecommendations,
+      resolveFoodIdForRecommendation,
+      unmarkRecommendProcessing,
+    ]
   );
 
   const removeFoodEntry = useCallback(
@@ -367,7 +474,7 @@ export function FoodLogger() {
     [cacheTotalsForEntries, loadTodayFoods, processingMealId]
   );
 
-  const searchRecipes = async () => {
+  const searchRecipes = useCallback(async () => {
     if (!recipeInput.trim()) {
       Alert.alert('알림', '재료를 입력해주세요.');
       return;
@@ -375,32 +482,33 @@ export function FoodLogger() {
     
     setLoadingRecommendations(true);
     try {
-      // 실제 API 호출 (123 123 로그인 포함)
-      const userStr = await AsyncStorage.getItem('currentUser');
-      if (!userStr) {
-        Alert.alert('알림', '로그인이 필요합니다.');
-        return;
-      }
-      
-      const response = await FoodService.getRecipeRecommendation(recipeInput);
+      const response = await FoodService.getRecipeRecommendation(recipeInput.trim());
       
       if (response.success && response.data) {
-        const recipeData = response.data.value || response.data;
-        if (recipeData.foodInfoDto && recipeData.foodInfoDto.length > 0) {
-          const recipe = recipeData.foodInfoDto[0];
-          const newRecipe: Recipe = {
-            id: Date.now().toString(),
-            name: recipe.name || '추천 레시피',
-            ingredients: recipe.description ? recipe.description.split('\n') : [],
-            calories: parseInt(recipe.calory) || 0,
-            time: 30,
-            difficulty: '중간',
-          };
-          setRecommendedRecipes([newRecipe]);
-          Alert.alert('성공', '레시피 추천을 받았습니다!');
-        } else {
-          Alert.alert('알림', '레시피를 찾을 수 없습니다.');
+        const recipe = response.data;
+        
+        // 백엔드 응답이 null인 경우 (레시피와 관련 없는 질문)
+        if (!recipe.name) {
+          Alert.alert('알림', '레시피와 관련 없는 질문입니다. 재료나 요리 방법에 대해 질문해주세요.');
+          return;
         }
+        
+        // description을 재료/조리법으로 파싱
+        const descriptionLines = recipe.description 
+          ? recipe.description.split('\n').filter(line => line.trim().length > 0)
+          : [];
+        
+        const newRecipe: Recipe = {
+          id: Date.now().toString(),
+          name: recipe.name,
+          ingredients: descriptionLines.length > 0 ? descriptionLines : ['레시피 정보가 없습니다.'],
+          calories: recipe.calory ? Number(recipe.calory) : 0,
+          time: 30, // 기본값 (백엔드에서 제공하지 않음)
+          difficulty: '중간', // 기본값 (백엔드에서 제공하지 않음)
+        };
+        
+        setRecommendedRecipes([newRecipe]);
+        Alert.alert('성공', '레시피 추천을 받았습니다!');
       } else {
         Alert.alert('알림', response.error || '레시피 추천에 실패했습니다.');
       }
@@ -411,7 +519,7 @@ export function FoodLogger() {
       setLoadingRecommendations(false);
       setRecipeInput('');
     }
-  };
+  }, [recipeInput]);
 
   const loadFoodRecommendations = async () => {
     setLoadingRecommendations(true);
@@ -672,8 +780,8 @@ export function FoodLogger() {
             ) : (
               recommendedMeals.map((meal) => (
                 <View key={meal.id} style={styles.mealSection}>
-                  <Text style={styles.mealTitle}>{meal.description}</Text>
-                  <Text style={styles.mealFood}>{meal.name}</Text>
+                  <Text style={styles.mealTitle}>{meal.name}</Text>
+                  <Text style={styles.mealFood}>{meal.description}</Text>
                   <Text style={styles.mealCalories}>약 {meal.calories}kcal</Text>
                   <View style={styles.mealMacros}>
                     <View style={styles.macroIndicator}>
@@ -692,9 +800,9 @@ export function FoodLogger() {
                   <TouchableOpacity
                     style={styles.addMealButton}
                     onPress={() => handleAddRecommendedMeal(meal)}
-                    disabled={processingMealId === (meal.id || meal.name)}
+                    disabled={Boolean(processingRecommendIds[meal.id || meal.name])}
                   >
-                    {processingMealId === (meal.id || meal.name) ? (
+                    {processingRecommendIds[meal.id || meal.name] ? (
                       <ActivityIndicator size="small" color="#FFFFFF" />
                     ) : (
                       <Text style={styles.addMealButtonText}>+ 추가하기</Text>
@@ -709,89 +817,187 @@ export function FoodLogger() {
     </>
   );
 
-  // AI Recipe Tab Component
-  const AIRecipeTab = () => (
-    <>
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.aiHeader}>
-            <Text style={styles.aiIcon}>🧑‍🍳</Text>
-            <Text style={styles.cardTitle}>AI 레시피 추천</Text>
-          </View>
-        </View>
-        <View style={styles.cardContent}>
-          <Text style={styles.aiDescription}>가지고 있는 재료를 입력하면 레시피를 추천해드립니다</Text>
-          
-          <View style={styles.recipeInputContainer}>
-            <TextInput
-              ref={recipeInputRef}
-              style={styles.recipeInput}
-              placeholder="예: 닭가슴살, 토마토, 양파"
-              placeholderTextColor="#9E9E9E"
-              value={recipeInput}
-              onChangeText={(text) => {
-                setRecipeInput(text);
-                // 키보드가 닫히는 것을 방지하기 위해 포커스 유지
-                setTimeout(() => {
-                  recipeInputRef.current?.focus();
-                }, 0);
-              }}
-              multiline
-              blurOnSubmit={false}
-              returnKeyType="none"
-              onSubmitEditing={() => {
-                // 키보드가 닫히지 않도록 아무 동작도 하지 않음
-              }}
-              keyboardType="default"
-              textContentType="none"
-              autoCorrect={false}
-              editable={true}
-            />
-            <TouchableOpacity 
-              style={styles.searchButton} 
-              onPress={searchRecipes}
-              disabled={loadingRecommendations}
-            >
-              {loadingRecommendations ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Icon name="search" size={20} color="#FFFFFF" />
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+  // 레시피를 식단에 추가하는 핸들러 (컴포넌트 외부로 이동하여 안정성 확보)
+  const handleAddRecipeToMeals = useCallback(async (recipe: Recipe) => {
+    // 레시피를 식단에 추가하는 로직
+    const foodRecommendation = {
+      name: recipe.name,
+      calory: recipe.calories,
+      carbohydrate: Math.floor(recipe.calories * 0.5 / 4),
+      protein: Math.floor(recipe.calories * 0.3 / 4),
+      fat: Math.floor(recipe.calories * 0.2 / 9),
+      foodKind: 'RECIPE' as const,
+      description: recipe.ingredients.join('\n'),
+    };
+    
+    // 레시피를 직접 추가
+    await handleAddRecommendedMeal({
+      id: recipe.id,
+      name: recipe.name,
+      description: recipe.ingredients.join('\n'),
+      calories: recipe.calories,
+      protein: foodRecommendation.protein,
+      carbs: foodRecommendation.carbohydrate,
+      fat: foodRecommendation.fat,
+    });
+  }, [handleAddRecommendedMeal]);
 
-      {recommendedRecipes.length > 0 && (
+  // AI Recipe Tab Component
+  const AIRecipeTab = () => {
+
+    return (
+      <>
+        {/* 입력 섹션 */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>추천 레시피</Text>
+            <View style={styles.aiHeader}>
+              <View style={styles.aiIconContainer}>
+                <Text style={styles.aiIcon}>🧑‍🍳</Text>
+              </View>
+              <View style={styles.aiHeaderText}>
+                <Text style={styles.cardTitle}>AI 레시피 추천</Text>
+                <Text style={styles.aiSubtitle}>재료만 알려주세요, 레시피를 추천해드립니다</Text>
+              </View>
+            </View>
           </View>
           <View style={styles.cardContent}>
-            {recommendedRecipes.map((recipe) => (
-              <View key={recipe.id} style={styles.recipeCard}>
-                <Text style={styles.recipeTitle}>{recipe.name}</Text>
-                <Text style={styles.recipeDescription}>
-                  조리 시간: {recipe.time}분 • 난이도: {recipe.difficulty}
-                </Text>
-                <Text style={styles.recipeNutrition}>
-                  {recipe.calories}kcal • 단백질 {Math.floor(recipe.calories * 0.3 / 4)}g • 탄수화물{' '}
-                  {Math.floor(recipe.calories * 0.5 / 4)}g
-                </Text>
-                <View style={styles.ingredientsContainer}>
-                  {recipe.ingredients.map((ing, idx) => (
-                    <View key={idx} style={styles.ingredientTag}>
-                      <Text style={styles.ingredientText}>{ing}</Text>
-                    </View>
-                  ))}
-                </View>
+            <View style={styles.recipeInputContainer}>
+              <RecipeTextInputComponent
+                key="recipe-text-input-stable"
+                ref={recipeInputRef}
+                value={recipeInput}
+                onChangeText={handleRecipeInputChange}
+                onFocus={handleRecipeInputFocus}
+                editable={!loadingRecommendations}
+              />
+              <TouchableOpacity 
+                style={[
+                  styles.searchButton,
+                  (!recipeInput.trim() || loadingRecommendations) && styles.searchButtonDisabled
+                ]} 
+                onPress={searchRecipes}
+                disabled={!recipeInput.trim() || loadingRecommendations}
+              >
+                {loadingRecommendations ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Icon name="search" size={20} color="#FFFFFF" />
+                )}
+              </TouchableOpacity>
+            </View>
+            {loadingRecommendations && (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="small" color="#6366f1" />
+                <Text style={styles.loadingText}>AI가 레시피를 추천하고 있습니다...</Text>
               </View>
-            ))}
+            )}
           </View>
         </View>
-      )}
-    </>
-  );
+
+        {/* 추천 레시피 섹션 */}
+        {recommendedRecipes.length > 0 ? (
+          recommendedRecipes.map((recipe) => (
+            <View key={recipe.id} style={styles.card}>
+              <View style={styles.cardHeader}>
+                <View style={styles.recipeHeader}>
+                  <View style={styles.recipeHeaderLeft}>
+                    <Text style={styles.recipeTitle}>{recipe.name}</Text>
+                    <View style={styles.recipeBadges}>
+                      <View style={styles.recipeBadge}>
+                        <Icon name="clock" size={12} color="#6366f1" />
+                        <Text style={styles.recipeBadgeText}>{recipe.time}분</Text>
+                      </View>
+                      <View style={styles.recipeBadge}>
+                        <Icon name="star" size={12} color="#FFB800" />
+                        <Text style={styles.recipeBadgeText}>{recipe.difficulty}</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              </View>
+              <View style={styles.cardContent}>
+                {/* 영양 정보 */}
+                <View style={styles.recipeNutritionCard}>
+                  <View style={styles.nutritionItem}>
+                    <Text style={styles.nutritionValue}>{recipe.calories}</Text>
+                    <Text style={styles.nutritionLabel}>kcal</Text>
+                  </View>
+                  <View style={styles.nutritionDivider} />
+                  <View style={styles.nutritionItem}>
+                    <Text style={styles.nutritionValue}>
+                      {Math.floor(recipe.calories * 0.3 / 4)}
+                    </Text>
+                    <Text style={styles.nutritionLabel}>단백질</Text>
+                  </View>
+                  <View style={styles.nutritionDivider} />
+                  <View style={styles.nutritionItem}>
+                    <Text style={styles.nutritionValue}>
+                      {Math.floor(recipe.calories * 0.5 / 4)}
+                    </Text>
+                    <Text style={styles.nutritionLabel}>탄수화물</Text>
+                  </View>
+                  <View style={styles.nutritionDivider} />
+                  <View style={styles.nutritionItem}>
+                    <Text style={styles.nutritionValue}>
+                      {Math.floor(recipe.calories * 0.2 / 9)}
+                    </Text>
+                    <Text style={styles.nutritionLabel}>지방</Text>
+                  </View>
+                </View>
+
+                {/* 재료 및 조리법 */}
+                <View style={styles.recipeSection}>
+                  <View style={styles.recipeSectionHeader}>
+                    <Icon name="list" size={16} color="#6366f1" />
+                    <Text style={styles.recipeSectionTitle}>재료 및 조리법</Text>
+                  </View>
+                  <View style={styles.recipeSteps}>
+                    {recipe.ingredients.map((step, idx) => (
+                      <View key={idx} style={styles.recipeStep}>
+                        <View style={styles.stepNumber}>
+                          <Text style={styles.stepNumberText}>{idx + 1}</Text>
+                        </View>
+                        <Text style={styles.stepText}>{step}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+
+                {/* 추가 버튼 */}
+                <TouchableOpacity
+                  style={styles.addRecipeButton}
+                  onPress={() => handleAddRecipeToMeals(recipe)}
+                  disabled={Boolean(processingRecommendIds[recipe.id])}
+                >
+                  {processingRecommendIds[recipe.id] ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Icon name="plus-circle" size={18} color="#FFFFFF" />
+                      <Text style={styles.addRecipeButtonText}>식단에 추가하기</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        ) : (
+          !loadingRecommendations && (
+            <View style={styles.card}>
+              <View style={styles.emptyRecipeState}>
+                <Text style={styles.emptyRecipeIcon}>🍳</Text>
+                <Text style={styles.emptyRecipeText}>레시피를 추천받아보세요</Text>
+                <Text style={styles.emptyRecipeSubtext}>
+                  가지고 있는 재료를 입력하면{'\n'}
+                  AI가 맞춤 레시피를 추천해드립니다
+                </Text>
+              </View>
+            </View>
+          )
+        )}
+      </>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -820,16 +1026,26 @@ export function FoodLogger() {
         })}
       </View>
 
-      <ScrollView 
-        style={styles.content} 
-        contentContainerStyle={styles.contentContainer}
-        keyboardShouldPersistTaps="handled"
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        {activeTab === 'record' && <RecordTab />}
-        {activeTab === 'track' && <TrackTab />}
-        {activeTab === 'recommend' && <RecommendTab />}
-        {activeTab === 'ai' && <AIRecipeTab />}
-      </ScrollView>
+        <ScrollView 
+          ref={scrollViewRef}
+          style={styles.content} 
+          contentContainerStyle={styles.contentContainer}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="none"
+          showsVerticalScrollIndicator={true}
+          nestedScrollEnabled={true}
+        >
+          {activeTab === 'record' && <RecordTab />}
+          {activeTab === 'track' && <TrackTab />}
+          {activeTab === 'recommend' && <RecommendTab />}
+          {activeTab === 'ai' && <AIRecipeTab />}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -888,6 +1104,9 @@ const styles = StyleSheet.create({
   },
   activeTabText: {
     color: '#FFFFFF',
+  },
+  keyboardAvoidingView: {
+    flex: 1,
   },
   content: {
     flex: 1,
@@ -1217,21 +1436,32 @@ const styles = StyleSheet.create({
   // AI Recipe Tab Styles
   aiHeader: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  aiIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#F0F4FF',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
   },
   aiIcon: {
     fontSize: 24,
   },
-  aiDescription: {
-    fontSize: 14,
+  aiHeaderText: {
+    flex: 1,
+  },
+  aiSubtitle: {
+    fontSize: 12,
     color: '#9E9E9E',
-    marginBottom: 16,
-    lineHeight: 20,
+    marginTop: 4,
   },
   recipeInputContainer: {
     flexDirection: 'row',
     gap: 12,
+    alignItems: 'flex-start',
   },
   recipeInput: {
     flex: 1,
@@ -1242,57 +1472,173 @@ const styles = StyleSheet.create({
     padding: 16,
     fontSize: 15,
     color: '#2B2B2B',
-    minHeight: 80,
+    minHeight: 100,
+    maxHeight: 150,
     textAlignVertical: 'top',
   },
   searchButton: {
-    backgroundColor: '#2B2B2B',
-    width: 48,
-    height: 48,
+    backgroundColor: '#6366f1',
+    width: 56,
+    height: 56,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  recipeCard: {
-    padding: 20,
+  searchButtonDisabled: {
+    backgroundColor: '#D1D5DB',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingVertical: 12,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: '#6366f1',
+  },
+  recipeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  recipeHeaderLeft: {
+    flex: 1,
+  },
+  recipeBadges: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  recipeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F0F4FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  recipeBadgeText: {
+    fontSize: 12,
+    color: '#6366f1',
+    fontWeight: '600',
+  },
+  recipeNutritionCard: {
+    flexDirection: 'row',
     backgroundColor: '#F9F9F9',
     borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
+    padding: 16,
+    marginBottom: 20,
+    alignItems: 'center',
+    justifyContent: 'space-around',
   },
-  recipeTitle: {
-    fontSize: 17,
+  nutritionItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  nutritionValue: {
+    fontSize: 20,
     fontWeight: '700',
     color: '#2B2B2B',
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  recipeDescription: {
-    fontSize: 13,
-    color: '#9E9E9E',
-    marginBottom: 8,
-  },
-  recipeNutrition: {
-    fontSize: 13,
-    color: '#9E9E9E',
-    marginBottom: 12,
-    fontWeight: '500',
-  },
-  ingredientsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  ingredientTag: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  ingredientText: {
+  nutritionLabel: {
     fontSize: 12,
+    color: '#9E9E9E',
+  },
+  nutritionDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: '#E0E0E0',
+  },
+  recipeSection: {
+    marginBottom: 20,
+  },
+  recipeSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  recipeSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
     color: '#2B2B2B',
+  },
+  recipeSteps: {
+    gap: 12,
+  },
+  recipeStep: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  stepNumber: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#6366f1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  stepNumberText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  stepText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#2B2B2B',
+    lineHeight: 20,
+  },
+  addRecipeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#6366f1',
+    padding: 16,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  addRecipeButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emptyRecipeState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 40,
+  },
+  emptyRecipeIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyRecipeText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#2B2B2B',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  emptyRecipeSubtext: {
+    fontSize: 14,
+    color: '#9E9E9E',
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });

@@ -10,6 +10,7 @@ import {
   Modal,
   TextInput,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -83,6 +84,8 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     weight: '',
     goal: 'GENERAL_HEALTH_MAINTENANCE' as HealthGoal,
   });
+  const [uploadingProfile, setUploadingProfile] = useState(false);
+  const [updatingProfile, setUpdatingProfile] = useState(false);
 
   useEffect(() => {
     loadUserData();
@@ -133,6 +136,27 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     }
   };
 
+  const uploadProfileImageToServer = async (asset: ImagePicker.ImagePickerAsset) => {
+    try {
+      setUploadingProfile(true);
+      const filePayload = {
+        uri: asset.uri,
+        name: asset.fileName || `profile-${Date.now()}.jpg`,
+        type: asset.mimeType || 'image/jpeg',
+      };
+      const response = await UserService.updateProfile({}, filePayload);
+      if (!response.success) {
+        throw new Error(response.error || '프로필 이미지를 업로드하지 못했습니다.');
+      }
+      Alert.alert('완료', response.data?.message || '프로필 사진이 업데이트되었습니다.');
+    } catch (error: any) {
+      console.error('프로필 이미지 업로드 실패:', error);
+      Alert.alert('업로드 실패', error?.message || '프로필 이미지를 업로드하지 못했습니다.');
+    } finally {
+      setUploadingProfile(false);
+    }
+  };
+
   const pickProfileImage = async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     
@@ -149,7 +173,8 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     });
 
     if (!result.canceled && result.assets[0]) {
-      const imageUri = result.assets[0].uri;
+      const selectedAsset = result.assets[0];
+      const imageUri = selectedAsset.uri;
       setProfileImage(imageUri);
       const userId = currentUser?.email || 'user@example.com';
       
@@ -161,7 +186,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       setCurrentUser(updatedUser);
       await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
       
-      Alert.alert('완료', '프로필 사진이 설정되었습니다.');
+      await uploadProfileImageToServer(selectedAsset);
     }
   };
 
@@ -196,7 +221,24 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
           text: '삭제',
           style: 'destructive',
           onPress: async () => {
-            // Handle account deletion
+            try {
+              const response = await UserService.deleteAccount();
+              if (!response.success) {
+                Alert.alert('삭제 실패', response.error || '계정 삭제 중 오류가 발생했습니다.');
+                return;
+              }
+              await AsyncStorage.multiRemove([
+                'currentUser',
+                `userProgress_${currentUser?.email}`,
+                `following_${currentUser?.email}`,
+                `profileImage_${currentUser?.email}`,
+              ]);
+              Alert.alert('완료', response.data?.message || '계정이 삭제되었습니다.');
+              if (onLoggedOut) onLoggedOut();
+            } catch (error) {
+              console.error('계정 삭제 실패:', error);
+              Alert.alert('삭제 실패', '계정 삭제 중 오류가 발생했습니다.');
+            }
           },
         },
       ]
@@ -271,6 +313,11 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                   <Text style={styles.avatarText}>
                     {currentUser.name?.charAt(0)?.toUpperCase() || '👤'}
                   </Text>
+                </View>
+              )}
+              {uploadingProfile && (
+                <View style={styles.avatarUploadingOverlay}>
+                  <ActivityIndicator color="#fff" />
                 </View>
               )}
               <View style={styles.avatarEditBadge}>
@@ -542,6 +589,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               />
               <Button
                 title="저장"
+                loading={updatingProfile}
                 onPress={async () => {
                   if (!editForm.name.trim()) {
                     Alert.alert('알림', '이름을 입력해주세요');
@@ -582,18 +630,24 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                   };
                   
                   try {
+                    setUpdatingProfile(true);
                     // 백엔드에 프로필 업데이트 요청
-                    await UserService.updateProfile(updatePayload);
+                    const response = await UserService.updateProfile(updatePayload);
+                    setUpdatingProfile(false);
+                    if (!response.success) {
+                      throw new Error(response.error || '프로필 수정 실패');
+                    }
                     setCurrentUser(updatedUser);
                     await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
-                    Alert.alert('완료', '프로필이 수정되었습니다');
+                    Alert.alert('완료', response.data?.message || '프로필이 수정되었습니다');
                     setShowEditModal(false);
                   } catch (error) {
                     console.error('프로필 업데이트 실패:', error);
+                    setUpdatingProfile(false);
                     // 백엔드 실패해도 로컬 저장
                     setCurrentUser(updatedUser);
                     await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
-                    Alert.alert('완료', '프로필이 수정되었습니다');
+                    Alert.alert('알림', '서버 동기화에 실패했지만 로컬 정보는 업데이트되었습니다.');
                     setShowEditModal(false);
                   }
                 }}
@@ -657,6 +711,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
+  },
+  avatarUploadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 32,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   avatarText: {
     fontSize: 32,
