@@ -10,6 +10,7 @@
  * RN에서 직접 호출 시 HTML 로그인 페이지가 오면 WebView를 통해 다시 시도합니다.
  */
 import { requestWithWebViewFallback } from './http';
+import { API_CONFIG } from '../config/api';
 
 /**
  * Exercise Info DTO 타입
@@ -46,14 +47,10 @@ export interface ExerciseRequest {
 
 /**
  * 운동 추천
- * POST /api/exercise/recommend
- * 
- * Swagger 명세:
- * - operationId: recommendExercise
- * - requestBody: ExerciseRequest (required)
- * - response: Api<List<ExerciseRecommendation>>
- * 
- * 백엔드가 POST를 사용하므로 그대로 호출합니다.
+ * 표준 스펙: POST /api/recommend/exercise
+ *
+ * 백엔드에 해당 엔드포인트가 없으면 404가 발생하며,
+ * WorkoutService 쪽에서 기본 추천으로 대체합니다.
  */
 export async function getExerciseRecommendation(
   userInput: string,
@@ -61,8 +58,9 @@ export async function getExerciseRecommendation(
   part: ExerciseRequest['part'] = 'HOME_TRAINING'
 ): Promise<ExerciseRecommendationItem[]> {
   const request: ExerciseRequest = { userInput, level, part };
+  const path = API_CONFIG.ENDPOINTS?.EXERCISE_RECOMMEND ?? '/api/recommend/exercise';
 
-  return requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', '/api/exercise/recommend', {
+  return requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', path, {
     body: request,
   });
 }

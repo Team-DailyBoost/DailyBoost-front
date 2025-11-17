@@ -167,6 +167,68 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
   };
 };
 
+const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
+  const postsNeedingDetails = posts.filter(
+    (post) => !post.createdAt || !post.displayDate || !post.time
+  );
+
+  if (postsNeedingDetails.length === 0) {
+    return posts;
+  }
+
+  const uniqueIds = Array.from(new Set(postsNeedingDetails.map((post) => post.id)));
+
+  const detailResults = await Promise.allSettled(
+    uniqueIds.map(async (postId) => {
+      try {
+        const res = await api.get<any>(`${API_CONFIG.ENDPOINTS.GET_POST_DETAIL}/${postId}`);
+        if (res.success && res.data?.createdAt) {
+          const createdAtIso = new Date(res.data.createdAt).toISOString();
+          return {
+            id: String(postId),
+            createdAt: createdAtIso,
+            time: formatPostDate(createdAtIso),
+            displayDate: formatAbsoluteDate(createdAtIso),
+          };
+        }
+      } catch (error) {
+        console.warn('⚠️ 게시글 상세 조회(날짜) 실패:', postId, error);
+      }
+      return null;
+    })
+  );
+
+  const enrichmentMap = new Map<
+    string,
+    { createdAt: string; time: string; displayDate: string }
+  >();
+
+  detailResults.forEach((result) => {
+    if (result.status === 'fulfilled' && result.value && result.value.createdAt) {
+      enrichmentMap.set(result.value.id, {
+        createdAt: result.value.createdAt,
+        time: result.value.time,
+        displayDate: result.value.displayDate,
+      });
+    }
+  });
+
+  if (enrichmentMap.size === 0) {
+    return posts;
+  }
+
+  return posts.map((post) => {
+    const enriched = enrichmentMap.get(String(post.id));
+    if (!enriched) return post;
+    return {
+      ...post,
+      createdAt: enriched.createdAt,
+      time: enriched.time,
+      displayDate: enriched.displayDate,
+    };
+  });
+};
+
 export function Community() {
   const [activeTab, setActiveTab] = useState<'posts' | 'competition'>('posts');
   const [posts, setPosts] = useState<Post[]>([]);
@@ -271,8 +333,9 @@ export function Community() {
         });
 
         if (allPosts.length > 0) {
-          setPosts(allPosts);
-          await AsyncStorage.setItem('communityPosts', JSON.stringify(allPosts));
+          const enrichedPosts = await enrichPostsWithDetails(allPosts);
+          setPosts(enrichedPosts);
+          await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
         } else {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
           if (savedPosts) {

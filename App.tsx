@@ -175,10 +175,6 @@ export default function App() {
               <Stack.Screen name="MainTabs">
                 {() => <MainTabs onLoggedOut={() => setIsAuthed(false)} />}
               </Stack.Screen>
-              {/* 로그인 이후 백그라운드 WebView를 항상 유지 */}
-              <Stack.Screen name="__bg_wv" options={{ presentation: 'transparentModal' }}>
-                {() => <BackgroundWebView />}
-              </Stack.Screen>
               {/* 로그인 완료 후에도 LoginScreen을 렌더링하여 WebView 유지 (화면에서는 숨김) */}
               <Stack.Screen 
                 name="AuthHidden" 
@@ -199,6 +195,7 @@ export default function App() {
           )}
         </Stack.Navigator>
       </NavigationContainer>
+      {isAuthed && <BackgroundWebView />}
     </>
   );
 }

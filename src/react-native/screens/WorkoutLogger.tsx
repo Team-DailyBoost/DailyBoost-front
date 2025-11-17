@@ -9,6 +9,7 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Card } from '../components/Card';
@@ -26,6 +27,12 @@ interface Exercise {
   cautions: string[];
   description: string;
   difficulty: 'beginner' | 'intermediate' | 'advanced';
+  duration?: number;
+  part?: string;
+  partLabel?: string;
+  levelLabel?: string;
+  youtubeLink?: string;
+  source?: 'AI' | 'LOCAL';
 }
 
 interface WorkoutEntry {
@@ -54,6 +61,14 @@ export function WorkoutLogger() {
   const [targetSeconds, setTargetSeconds] = useState(0);
   const [todaysRecommendations, setTodaysRecommendations] = useState<Exercise[]>([]);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+
+  const openYoutubeLink = (url: string) => {
+    if (!url) return;
+    const safeUrl = url.startsWith('http') ? url : `https://${url}`;
+    Linking.openURL(safeUrl).catch(() => {
+      Alert.alert('오류', '영상을 열 수 없습니다. 네트워크 상태를 확인해주세요.');
+    });
+  };
 
   // Exercise database
   const exerciseDatabase: Exercise[] = [
@@ -85,6 +100,135 @@ export function WorkoutLogger() {
     { id: 'cardio', name: '유산소', icon: '❤️' },
   ];
 
+const BODY_PART_LABELS: Record<string, string> = bodyParts.reduce((acc, part) => {
+  acc[part.id] = part.name;
+  return acc;
+}, {} as Record<string, string>);
+
+const DEFAULT_CAUTION = '운동 전 충분히 준비운동을 진행하세요.';
+
+const EXERCISE_PART_META: Record<
+  'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING',
+  { bodyPart: string; label: string; isCardio?: boolean; cautions: string[] }
+> = {
+  CHEST: {
+    bodyPart: 'chest',
+    label: '가슴',
+    cautions: ['어깨 힘을 빼고 가슴에 집중하세요.', '허리를 과도하게 꺾지 마세요.'],
+  },
+  BACK: {
+    bodyPart: 'back',
+    label: '등',
+    cautions: ['허리를 곧게 유지하세요.', '팔 힘보다 등 근육을 사용하세요.'],
+  },
+  SHOULDER: {
+    bodyPart: 'shoulder',
+    label: '어깨',
+    cautions: ['목에 힘이 들어가지 않도록 주의하세요.', '무게보다 정확한 자세에 집중하세요.'],
+  },
+  LOWER_BODY: {
+    bodyPart: 'legs',
+    label: '하체',
+    cautions: ['무릎이 안쪽으로 모이지 않도록 주의하세요.', '무게 중심을 발 전체에 고르게 두세요.'],
+  },
+  BICEPS: {
+    bodyPart: 'biceps',
+    label: '이두',
+    cautions: ['팔꿈치를 고정하고 반동을 줄이세요.', '손목에 무리가 가지 않도록 주의하세요.'],
+  },
+  TRICEPS: {
+    bodyPart: 'triceps',
+    label: '삼두',
+    cautions: ['팔꿈치를 몸 가까이 유지하세요.', '무게보다 자세를 우선하세요.'],
+  },
+  CARDIO: {
+    bodyPart: 'cardio',
+    label: '유산소',
+    isCardio: true,
+    cautions: ['호흡을 일정하게 유지하세요.', '충분한 수분을 섭취하세요.', '과도한 무리는 피하세요.'],
+  },
+  HOME_TRAINING: {
+    bodyPart: 'all',
+    label: '홈트레이닝',
+    cautions: ['주변 공간을 확보하고 진행하세요.', DEFAULT_CAUTION],
+  },
+};
+
+const DEFAULT_EXERCISE_META = {
+  bodyPart: 'all',
+  label: '전신',
+  isCardio: false,
+  cautions: [DEFAULT_CAUTION],
+};
+
+const DIFFICULTY_LABELS: Record<Exercise['difficulty'], string> = {
+  beginner: '초급',
+  intermediate: '중급',
+  advanced: '고급',
+};
+
+const normalizeDifficulty = (level?: string): Exercise['difficulty'] => {
+  const normalized = (level || 'BEGINNER').toString().toLowerCase();
+  if (normalized === 'advanced') return 'advanced';
+  if (normalized === 'intermediate') return 'intermediate';
+  return 'beginner';
+};
+
+const decorateExercise = (exercise: Exercise): Exercise => {
+  const difficulty = exercise.difficulty ?? 'beginner';
+  const partLabel =
+    exercise.partLabel ??
+    (exercise.part
+      ? EXERCISE_PART_META[exercise.part as keyof typeof EXERCISE_PART_META]?.label
+      : BODY_PART_LABELS[exercise.bodyPart] ?? '전신');
+  const levelLabel = exercise.levelLabel ?? DIFFICULTY_LABELS[difficulty] ?? difficulty;
+  const cautions = exercise.cautions && exercise.cautions.length > 0 ? exercise.cautions : [DEFAULT_CAUTION];
+
+  return {
+    ...exercise,
+    difficulty,
+    partLabel,
+    levelLabel,
+    cautions,
+  };
+};
+
+const convertRecommendationToExercise = (item: any, index: number): Exercise => {
+  const partKey = typeof item?.part === 'string' ? (item.part as keyof typeof EXERCISE_PART_META) : 'HOME_TRAINING';
+  const meta = EXERCISE_PART_META[partKey] ?? DEFAULT_EXERCISE_META;
+  const difficulty = normalizeDifficulty(item?.level);
+  const rawYoutubeLink =
+    typeof item?.youtubeLink === 'string'
+      ? item.youtubeLink
+      : typeof item?.youtubeLinks === 'string'
+      ? item.youtubeLinks
+      : undefined;
+  const youtubeLink =
+    rawYoutubeLink && rawYoutubeLink.trim().length > 0 ? rawYoutubeLink.trim() : undefined;
+
+  return decorateExercise({
+    id: `ai_${Date.now()}_${index}`,
+    name: item?.name || `추천 운동 ${index + 1}`,
+    bodyPart: meta.bodyPart,
+    isCardio: Boolean(meta.isCardio),
+    calories: item?.duration ? Math.max(4, Math.round(item.duration * 6)) : 8,
+    cautions: meta.cautions,
+    description: item?.description || 'AI 추천 운동',
+    difficulty,
+    duration: item?.duration,
+    youtubeLink,
+    part: partKey,
+    source: 'AI',
+  });
+};
+
+const getDifficultyLabel = (difficulty: Exercise['difficulty']) => DIFFICULTY_LABELS[difficulty] ?? difficulty;
+
+const getPartLabel = (exercise: Exercise) =>
+  exercise.partLabel ??
+  (exercise.part
+    ? EXERCISE_PART_META[exercise.part as keyof typeof EXERCISE_PART_META]?.label
+    : BODY_PART_LABELS[exercise.bodyPart] ?? '전신');
   // 운동 추천 API 호출 (중복 호출 방지)
   const loadTodaysRecommendations = async () => {
     // 이미 요청 중이면 건너뜀
@@ -108,27 +252,29 @@ export function WorkoutLogger() {
       const userInput = `집에서 할 수 있는 운동을 ${workoutTime}분 동안 추천해줘. 컨디션은 ${condition === 'good' ? '좋음' : condition === 'normal' ? '보통' : '피곤함'}입니다.`;
       
       const response = await WorkoutService.getExerciseRecommendation(userInput, level);
-      
+
       if (response.success && response.data) {
-        const data = response.data.value || response.data;
-        if (data.exerciseInfoDto && Array.isArray(data.exerciseInfoDto)) {
-          const exercises: Exercise[] = data.exerciseInfoDto.map((item: any, index: number) => ({
-            id: `ai_${index}`,
-            name: item.name || '추천 운동',
-            bodyPart: 'all',
-            isCardio: false,
-            calories: 8,
-            cautions: ['운동 전 준비운동 필수'],
-            description: item.description || 'AI 추천 운동',
-            difficulty: item.level?.toLowerCase() || 'beginner',
-          }));
+        const raw = response.data as any;
+        const normalizedList: any[] = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.exerciseInfoDto)
+          ? raw.exerciseInfoDto
+          : [];
+
+        if (normalizedList.length > 0) {
+          const exercises = normalizedList.map((item, index) => convertRecommendationToExercise(item, index));
           setTodaysRecommendations(exercises);
-        } else {
-          throw new Error('응답 형식 오류');
+          return;
         }
-      } else {
-        throw new Error(response.error || '운동 추천 실패');
       }
+
+      if (response.meta?.usedFallback && Array.isArray(response.data)) {
+        const exercises = (response.data as any[]).map((item, index) => convertRecommendationToExercise(item, index));
+        setTodaysRecommendations(exercises);
+        return;
+      }
+
+      throw new Error(response.error || '운동 추천 실패');
     } catch (error: any) {
       Alert.alert('오류', `운동 추천 중 오류가 발생했습니다.\n${error.message || error}`);
       
@@ -144,7 +290,10 @@ export function WorkoutLogger() {
         6: ['pushup', 'lunge', 'pullup', 'hiit'],
       };
       const todayIds = recommendations[day] || recommendations[0];
-      const exercises = todayIds.map(id => exerciseDatabase.find(e => e.id === id)!).filter(Boolean);
+      const exercises = todayIds
+        .map((id) => exerciseDatabase.find((e) => e.id === id))
+        .filter((item): item is Exercise => Boolean(item))
+        .map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
       setTodaysRecommendations(exercises);
     } finally {
       setLoadingRecommendations(false);
@@ -171,12 +320,15 @@ export function WorkoutLogger() {
     };
 
     const todayIds = recommendations[day] || recommendations[0];
-    return todayIds.map(id => exerciseDatabase.find(e => e.id === id)!).filter(Boolean);
+    return todayIds
+      .map((id) => exerciseDatabase.find((e) => e.id === id))
+      .filter((item): item is Exercise => Boolean(item))
+      .map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
   };
 
   const getBodyPartRecommendations = (bodyPart: string): Exercise[] => {
-    const filtered = exerciseDatabase.filter(e => e.bodyPart === bodyPart);
-    return filtered.slice(0, 5);
+    const filtered = exerciseDatabase.filter((e) => e.bodyPart === bodyPart);
+    return filtered.slice(0, 5).map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
   };
 
   const addWorkout = (exercise: Exercise) => {
@@ -396,7 +548,18 @@ export function WorkoutLogger() {
                     </View>
                     <View style={styles.exerciseContent}>
                       <Text style={styles.exerciseName}>{exercise.name}</Text>
+                      <Text style={styles.exerciseMeta}>
+                        {getPartLabel(exercise)} · {getDifficultyLabel(exercise.difficulty)}
+                      </Text>
                       <Text style={styles.exerciseDesc}>{exercise.description}</Text>
+                      {exercise.youtubeLink ? (
+                        <TouchableOpacity
+                          style={styles.exerciseLinkWrapper}
+                          onPress={() => exercise.youtubeLink && openYoutubeLink(exercise.youtubeLink)}
+                        >
+                          <Text style={styles.exerciseLink}>🎬 시연 영상 보기</Text>
+                        </TouchableOpacity>
+                      ) : null}
                       <Button title="추가" onPress={() => addWorkout(exercise)} />
                     </View>
                   </View>
@@ -427,7 +590,18 @@ export function WorkoutLogger() {
                   </View>
                   <View style={styles.exerciseContent}>
                     <Text style={styles.exerciseName}>{exercise.name}</Text>
+                    <Text style={styles.exerciseMeta}>
+                      {getPartLabel(exercise)} · {getDifficultyLabel(exercise.difficulty)}
+                    </Text>
                     <Text style={styles.exerciseDesc}>{exercise.description}</Text>
+                    {exercise.youtubeLink ? (
+                      <TouchableOpacity
+                        style={styles.exerciseLinkWrapper}
+                        onPress={() => exercise.youtubeLink && openYoutubeLink(exercise.youtubeLink)}
+                      >
+                        <Text style={styles.exerciseLink}>🎬 시연 영상 보기</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     <Button title="추가" onPress={() => addWorkout(exercise)} />
                   </View>
                 </View>
@@ -718,10 +892,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 4,
   },
+  exerciseMeta: {
+    fontSize: 12,
+    color: '#007AFF',
+    fontWeight: '500',
+    marginBottom: 4,
+  },
   exerciseDesc: {
     fontSize: 12,
     color: '#666',
     marginBottom: 4,
+  },
+  exerciseLinkWrapper: {
+    marginBottom: 8,
+  },
+  exerciseLink: {
+    fontSize: 12,
+    color: '#2563eb',
+    textDecorationLine: 'underline',
   },
   exerciseCalories: {
     fontSize: 12,

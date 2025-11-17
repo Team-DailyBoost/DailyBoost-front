@@ -115,7 +115,7 @@ export class WorkoutService {
    * client.ts는 AsyncStorage의 @sessionCookie를 자동으로 헤더에 추가합니다.
    * 
    * Note: Requires authentication
-   * Response: Api<ExerciseRecommendation> where ExerciseRecommendation contains exerciseInfoDto array
+   * Response: ExerciseRecommendationItem[] (List<ExerciseRecommendation> in backend)
    */
   static async getExerciseRecommendation(
     userInput: string,

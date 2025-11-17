@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   RefreshControl,
   Alert,
+  Linking,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LineChart, BarChart } from 'react-native-chart-kit';
@@ -32,6 +33,8 @@ interface ExerciseRecommendation {
   name: string;
   description: string;
   level: string;
+  partLabel: string;
+  youtubeLink?: string;
   duration?: number;
 }
 
@@ -44,6 +47,23 @@ interface DietRecommendation {
   carbohydrate: number;
   fat: number;
 }
+
+const EXERCISE_PART_LABELS: Record<string, string> = {
+  CHEST: '가슴',
+  BACK: '등',
+  SHOULDER: '어깨',
+  LOWER_BODY: '하체',
+  BICEPS: '이두',
+  TRICEPS: '삼두',
+  CARDIO: '유산소',
+  HOME_TRAINING: '홈트레이닝',
+};
+
+const EXERCISE_LEVEL_LABELS: Record<string, string> = {
+  BEGINNER: '초급',
+  INTERMEDIATE: '중급',
+  ADVANCED: '고급',
+};
 
 export function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
@@ -76,6 +96,14 @@ export function Dashboard() {
     carbs: 250,
     fat: 67,
     exercise: 60
+  };
+
+  const openExerciseVideo = (url?: string) => {
+    if (!url) return;
+    const safeUrl = url.startsWith('http') ? url : `https://${url}`;
+    Linking.openURL(safeUrl).catch(() => {
+      Alert.alert('오류', '영상을 열 수 없습니다. 네트워크 상태를 확인해주세요.');
+    });
   };
 
   // Character states based on exercise completion
@@ -295,15 +323,38 @@ export function Dashboard() {
       }
 
       if (response.success && response.data) {
-        const data = response.data;
-        if (Array.isArray(data)) {
-          const exercises: ExerciseRecommendation[] = data.map((item, index) => ({
-            id: `exercise_${index}`,
-            name: item.name || '추천 운동',
-            description: item.description || 'AI 추천 운동',
-            level: item.level || 'INTERMEDIATE',
-            duration: item.duration || 30,
-          }));
+        const raw = response.data as any;
+        const normalized = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.exerciseInfoDto)
+          ? raw.exerciseInfoDto
+          : [];
+
+        if (normalized.length > 0) {
+          const exercises: ExerciseRecommendation[] = normalized.map((item: any, index: number) => {
+            const partKey =
+              typeof item?.part === 'string' && EXERCISE_PART_LABELS[item.part]
+                ? item.part
+                : 'HOME_TRAINING';
+            const levelKey =
+              typeof item?.level === 'string' && EXERCISE_LEVEL_LABELS[item.level]
+                ? item.level
+                : 'BEGINNER';
+            return {
+              id: `exercise_${index}`,
+              name: item?.name || `추천 운동 ${index + 1}`,
+              description: item?.description || 'AI 추천 운동',
+              level: EXERCISE_LEVEL_LABELS[levelKey] ?? levelKey,
+              partLabel: EXERCISE_PART_LABELS[partKey] ?? '전신',
+              youtubeLink:
+                typeof item?.youtubeLink === 'string'
+                  ? item.youtubeLink
+                  : typeof item?.youtubeLinks === 'string'
+                  ? item.youtubeLinks
+                  : undefined,
+              duration: typeof item?.duration === 'number' ? item.duration : undefined,
+            };
+          });
           setExerciseRecommendations(exercises);
         } else {
           setExerciseRecommendations([]);
@@ -729,6 +780,10 @@ export function Dashboard() {
                     <Text style={styles.levelBadgeText}>{exercise.level}</Text>
                   </View>
                 </View>
+                <View style={styles.recommendationMeta}>
+                  <Icon name="map-pin" size={14} color="#6b7280" />
+                  <Text style={styles.recommendationMetaText}>{exercise.partLabel}</Text>
+                </View>
                 <Text style={styles.recommendationDescription}>{exercise.description}</Text>
                 {exercise.duration && (
                   <View style={styles.recommendationMeta}>
@@ -736,6 +791,11 @@ export function Dashboard() {
                     <Text style={styles.recommendationMetaText}>{exercise.duration}분</Text>
                   </View>
                 )}
+                {exercise.youtubeLink ? (
+                  <TouchableOpacity onPress={() => openExerciseVideo(exercise.youtubeLink)}>
+                    <Text style={styles.recommendationLink}>🎬 시연 영상 보기</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             ))
           ) : (
@@ -1178,6 +1238,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    marginBottom: 6,
   },
   recommendationMetaText: {
     fontSize: 12,
@@ -1196,6 +1257,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     color: '#2563eb',
+  },
+  recommendationLink: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#2563eb',
+    textDecorationLine: 'underline',
   },
   mealTypeText: {
     fontSize: 12,

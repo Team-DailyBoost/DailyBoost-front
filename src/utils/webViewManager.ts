@@ -168,7 +168,8 @@ class WebViewManagerClass {
                   const path = payload.path || '/';
                   const headers = payload.headers || {};
                   const query = payload.query || {};
-                  const body = payload.body || null;
+                  const hasBody = typeof payload.body !== 'undefined' && payload.body !== null;
+                  const body = hasBody ? payload.body : null;
                   const id = payload.id || Date.now();
 
                   // 시작/하트비트 신호 전송으로 네이티브 타임아웃 연장
@@ -192,30 +193,71 @@ class WebViewManagerClass {
                         .join('&')
                     : '';
 
-                  const reqInit = {
-                    method,
-                    headers: headers,
-                    credentials: 'include',
-                  };
-                  if (body && method !== 'GET') {
-                    reqInit.headers = { 'Content-Type': 'application/json', ...headers };
-                    reqInit.body = JSON.stringify(body);
-                  }
-
                   // 백엔드 전체 URL 구성 (상대 경로면 백엔드 BASE를 사용)
                   const fullUrl = path.startsWith('http') ? path + qs : (BACKEND_BASE + path + qs);
                   console.log('🔵 [WebView Script] 요청 URL:', fullUrl);
-                  console.log('🔵 [WebView Script] 요청 옵션:', JSON.stringify(reqInit).substring(0, 200));
-                  
-                  const res = await fetch(fullUrl, reqInit);
-                  console.log('🔵 [WebView Script] 응답 상태:', res.status);
-                  
-                  const contentType = res.headers.get('content-type') || '';
+                  const useXhrForGetBody = method === 'GET' && hasBody;
+                  let status = 0;
                   let data;
-                  if (contentType.includes('application/json')) {
-                    data = await res.json();
+                  
+                  if (useXhrForGetBody) {
+                    console.log('🔵 [WebView Script] GET + body 조합 → XMLHttpRequest 사용');
+                    data = await (function() {
+                      return new Promise(function(resolve, reject) {
+                        try {
+                          const xhr = new XMLHttpRequest();
+                          xhr.open('GET', fullUrl, true);
+                          xhr.withCredentials = true;
+                          Object.keys(headers).forEach(function(key) {
+                            try { xhr.setRequestHeader(key, headers[key]); } catch (e) {}
+                          });
+                          if (!headers['Content-Type'] && !headers['content-type']) {
+                            try { xhr.setRequestHeader('Content-Type', 'application/json'); } catch (e) {}
+                          }
+                          xhr.onreadystatechange = function() {
+                            if (xhr.readyState === 4) {
+                              status = xhr.status;
+                              const respText = xhr.responseText || '';
+                              const respCt = (xhr.getResponseHeader && xhr.getResponseHeader('content-type')) || '';
+                              if (respCt.indexOf('application/json') !== -1) {
+                                try { resolve(JSON.parse(respText)); }
+                                catch (parseErr) { resolve(respText); }
+                              } else {
+                                resolve(respText);
+                              }
+                            }
+                          };
+                          xhr.onerror = function() {
+                            reject(new Error('XMLHttpRequest failed'));
+                          };
+                          xhr.send(JSON.stringify(body));
+                        } catch (xhrError) {
+                          reject(xhrError);
+                        }
+                      });
+                    })();
                   } else {
-                    data = await res.text();
+                    const reqInit = {
+                      method,
+                      headers: headers,
+                      credentials: 'include',
+                    };
+                    if (hasBody) {
+                      reqInit.headers = { 'Content-Type': 'application/json', ...headers };
+                      reqInit.body = JSON.stringify(body);
+                    }
+                    console.log('🔵 [WebView Script] 요청 옵션:', JSON.stringify(reqInit).substring(0, 200));
+                    
+                    const res = await fetch(fullUrl, reqInit);
+                    status = res.status;
+                    console.log('🔵 [WebView Script] 응답 상태:', status);
+                    
+                    const contentType = res.headers.get('content-type') || '';
+                    if (contentType.includes('application/json')) {
+                      data = await res.json();
+                    } else {
+                      data = await res.text();
+                    }
                   }
                   
                   console.log('🔵 [WebView Script] 응답 데이터 타입:', typeof data);
@@ -224,7 +266,7 @@ class WebViewManagerClass {
                   const responseMsg = {
                     type: 'api:success',
                     id,
-                    status: res.status,
+                    status: status || 200,
                     data
                   };
                   console.log('🔵 [WebView Script] postMessage 전송:', JSON.stringify(responseMsg).substring(0, 200));
@@ -268,7 +310,8 @@ class WebViewManagerClass {
                     const path = p.path || '/';
                     const headers = p.headers || {};
                     const query = p.query || {};
-                    const body = p.body || null;
+                    const hasBody = typeof p.body !== 'undefined' && p.body !== null;
+                    const body = hasBody ? p.body : null;
                     const reqId = p.id || ${JSON.stringify(id)};
                     try {
                       if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -285,17 +328,57 @@ class WebViewManagerClass {
                     const qs = Object.keys(query).length
                       ? '?' + Object.entries(query).map(function(kv){return encodeURIComponent(kv[0])+'='+encodeURIComponent(kv[1]);}).join('&')
                       : '';
-                    const init = { method: method, headers: headers, credentials: 'include' };
-                    if (body && method !== 'GET') { init.headers = Object.assign({ 'Content-Type': 'application/json' }, headers); init.body = JSON.stringify(body); }
                     var BACKEND_BASE = ${JSON.stringify(API_CONFIG.BASE_URL)};
                     const fullUrl = path.indexOf('http') === 0 ? path + qs : (BACKEND_BASE + path + qs);
                     console.log('🔵 [WebView Script Fallback] 요청 URL:', fullUrl);
-                    const r = await fetch(fullUrl, init);
-                    const ct = r.headers.get('content-type') || '';
+                    const useXhrForGetBody = method === 'GET' && hasBody;
+                    var statusCode = 0;
                     var d;
-                    if (ct.indexOf('application/json') > -1) { d = await r.json(); } else { d = await r.text(); }
+                    if (useXhrForGetBody) {
+                      console.log('🔵 [WebView Script Fallback] GET + body → XMLHttpRequest 사용');
+                      d = await (function() {
+                        return new Promise(function(resolve, reject) {
+                          try {
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', fullUrl, true);
+                            xhr.withCredentials = true;
+                            Object.keys(headers).forEach(function(key) {
+                              try { xhr.setRequestHeader(key, headers[key]); } catch (e) {}
+                            });
+                            if (!headers['Content-Type'] && !headers['content-type']) {
+                              try { xhr.setRequestHeader('Content-Type', 'application/json'); } catch (e) {}
+                            }
+                            xhr.onreadystatechange = function() {
+                              if (xhr.readyState === 4) {
+                                statusCode = xhr.status;
+                                var respText = xhr.responseText || '';
+                                var respCt = (xhr.getResponseHeader && xhr.getResponseHeader('content-type')) || '';
+                                if (respCt.indexOf('application/json') > -1) {
+                                  try { resolve(JSON.parse(respText)); }
+                                  catch (parseErr) { resolve(respText); }
+                                } else {
+                                  resolve(respText);
+                                }
+                              }
+                            };
+                            xhr.onerror = function() { reject(new Error('XMLHttpRequest failed')); };
+                            xhr.send(JSON.stringify(body));
+                          } catch (xhrError) {
+                            reject(xhrError);
+                          }
+                        });
+                      })();
+                    } else {
+                      const init = { method: method, headers: headers, credentials: 'include' };
+                      if (hasBody) { init.headers = Object.assign({ 'Content-Type': 'application/json' }, headers); init.body = JSON.stringify(body); }
+                      console.log('🔵 [WebView Script Fallback] 요청 옵션:', JSON.stringify(init).substring(0, 200));
+                      const r = await fetch(fullUrl, init);
+                      statusCode = r.status;
+                      const ct = r.headers.get('content-type') || '';
+                      if (ct.indexOf('application/json') > -1) { d = await r.json(); } else { d = await r.text(); }
+                    }
                     if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:success', id: reqId, status: r.status, data: d }));
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:success', id: reqId, status: statusCode || 200, data: d }));
                     }
                     try { clearInterval(__wv_hb2); } catch (e) {}
                   } catch (e) {

@@ -38,25 +38,67 @@ const injectedGenericApiScript = `
           // 동일 백엔드 절대 URL
           var fullUrl = path.indexOf('http') === 0 ? (path + qs) : (BACKEND_BASE + path + qs);
 
-          var init = { method: method, headers: headers, credentials: 'include' };
-          if (body && method !== 'GET') {
-            init.headers = Object.assign({ 'Content-Type': 'application/json' }, headers);
-            init.body = JSON.stringify(body);
-          }
-
-          var res = await fetch(fullUrl, init);
-          var ct = res.headers.get('content-type') || '';
+          var hasBody = typeof body !== 'undefined' && body !== null;
+          var useXhrForGetBody = method === 'GET' && hasBody;
+          var status = 0;
           var data;
-          if (ct.indexOf('application/json') !== -1) {
-            data = await res.json();
+
+          if (useXhrForGetBody) {
+            data = await (function() {
+              return new Promise(function(resolve, reject) {
+                try {
+                  var xhr = new XMLHttpRequest();
+                  xhr.open('GET', fullUrl, true);
+                  xhr.withCredentials = true;
+                  Object.keys(headers).forEach(function(key) {
+                    try { xhr.setRequestHeader(key, headers[key]); } catch(e) {}
+                  });
+                  if (!headers['Content-Type'] && !headers['content-type']) {
+                    try { xhr.setRequestHeader('Content-Type', 'application/json'); } catch(e) {}
+                  }
+                  xhr.onreadystatechange = function() {
+                    if (xhr.readyState === 4) {
+                      status = xhr.status;
+                      var respText = xhr.responseText || '';
+                      var respCt = xhr.getResponseHeader && xhr.getResponseHeader('content-type') || '';
+                      if (respCt.indexOf('application/json') !== -1) {
+                        try { resolve(JSON.parse(respText)); }
+                        catch (parseErr) { resolve(respText); }
+                      } else {
+                        resolve(respText);
+                      }
+                    }
+                  };
+                  xhr.onerror = function() {
+                    reject(new Error('XMLHttpRequest failed'));
+                  };
+                  xhr.send(JSON.stringify(body));
+                } catch (xhrError) {
+                  reject(xhrError);
+                }
+              });
+            })();
           } else {
-            data = await res.text();
+            var init = { method: method, headers: headers, credentials: 'include' };
+            if (hasBody) {
+              init.headers = Object.assign({ 'Content-Type': 'application/json' }, headers);
+              init.body = JSON.stringify(body);
+            }
+
+            var res = await fetch(fullUrl, init);
+            status = res.status;
+            var ct = res.headers.get('content-type') || '';
+            if (ct.indexOf('application/json') !== -1) {
+              data = await res.json();
+            } else {
+              data = await res.text();
+            }
           }
 
           window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'api:success',
             id: id,
-            status: res.status,
+            status: status || 200,
             data: data
           }));
         } catch (err) {
