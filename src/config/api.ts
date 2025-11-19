@@ -32,7 +32,7 @@ export const API_CONFIG = {
     
     // Exercise endpoints
     EXERCISE_REGISTER: '/api/exercise/register',  // POST /api/exercise/register
-    EXERCISE_RECOMMEND: '/api/recommend/exercise',  // GET /api/recommend/exercise (⚠️ @RequestBody 있음 - 비표준)
+    EXERCISE_RECOMMEND: '/api/exercise/recommend',  // GET /api/exercise/recommend (⚠️ @RequestBody 있음 - 비표준)
     
     // AI/Gemini endpoints
     GEMINI_RECOMMEND_FOOD: '/api/recommend/food',  // GET /api/recommend/food (⚠️ @RequestBody 있음 - 비표준)

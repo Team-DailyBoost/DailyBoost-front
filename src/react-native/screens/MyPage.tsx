@@ -97,24 +97,73 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       const parsed = saved ? JSON.parse(saved) : null;
       let resolvedUser = parsed || {};
 
-      // Try backend profile
-      const profile = await UserService.getProfile();
-      if (profile) {
-        // 백엔드 프로필과 병합하되, 로컬의 나이/성별/헬스 정보는 보존
-        resolvedUser = { 
-          ...resolvedUser, 
-          ...profile,
-          // 로컬에 저장된 나이, 성별, 헬스 정보는 유지 (백엔드에 없을 수 있음)
-          age: resolvedUser?.age || profile?.age,
-          gender: resolvedUser?.gender || profile?.gender,
-          healthInfo: resolvedUser?.healthInfo || profile?.healthInfo,
-        };
-        await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
+      // 먼저 로컬 저장소의 정보를 표시 (빠른 로딩)
+      if (resolvedUser && Object.keys(resolvedUser).length > 0) {
+        setCurrentUser(resolvedUser);
       }
-      setCurrentUser(resolvedUser);
+
+      // JWT 토큰에서 ID 추출 시도
+      let currentUserId = resolvedUser?.id || parsed?.id;
+      if (!currentUserId) {
+        try {
+          const token = await AsyncStorage.getItem('@accessToken');
+          if (token) {
+            // JWT 토큰 디코딩
+            const segments = token.split('.');
+            if (segments.length >= 2) {
+              try {
+                const base = segments[1].replace(/-/g, '+').replace(/_/g, '/');
+                const padded = base.padEnd(Math.ceil(base.length / 4) * 4, '=');
+                const Buffer = (await import('buffer')).Buffer;
+                const decoded = Buffer.from(padded, 'base64').toString('utf8');
+                const payload = JSON.parse(decoded);
+                // JWT payload에서 id 추출 (백엔드가 id를 포함하는 경우)
+                if (payload?.id || payload?.userId || payload?.sub) {
+                  currentUserId = payload.id || payload.userId || payload.sub;
+                  resolvedUser = { ...resolvedUser, id: currentUserId };
+                  await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
+                  setCurrentUser(resolvedUser);
+                }
+              } catch (e) {
+                console.log('JWT 디코딩 실패:', e);
+              }
+            }
+          }
+        } catch (e) {
+          console.log('토큰에서 ID 추출 실패:', e);
+        }
+      }
+
+      let backendProfile = null;
+      
+      // Try backend profile (userId가 있으면 백엔드에서 가져오기)
+      if (currentUserId) {
+        try {
+          backendProfile = await UserService.getProfile(currentUserId);
+          if (backendProfile) {
+            // 백엔드 프로필과 병합하되, 로컬의 나이/성별/헬스 정보는 보존
+            resolvedUser = { 
+              ...resolvedUser, 
+              ...backendProfile,
+              // 로컬에 저장된 나이, 성별, 헬스 정보는 유지 (백엔드에 없을 수 있음)
+              age: resolvedUser?.age || backendProfile?.age,
+              gender: resolvedUser?.gender || backendProfile?.gender,
+              healthInfo: resolvedUser?.healthInfo || backendProfile?.healthInfo,
+            };
+            await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
+            setCurrentUser(resolvedUser);
+          }
+        } catch (profileError) {
+          console.error('백엔드 프로필 조회 실패:', profileError);
+          // 백엔드 조회 실패해도 로컬 데이터는 사용
+        }
+      } else {
+        // userId가 없어도 로컬 정보는 표시
+        setCurrentUser(resolvedUser);
+      }
 
       const resolvedUserId =
-        (resolvedUser?.email || parsed?.email || profile?.email || 'user@example.com') as string;
+        (resolvedUser?.email || parsed?.email || backendProfile?.email || 'user@example.com') as string;
       setUserId(resolvedUserId);
 
       const progress = await AsyncStorage.getItem(`userProgress_${resolvedUserId}`);

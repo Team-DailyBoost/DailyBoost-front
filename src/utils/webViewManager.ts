@@ -15,6 +15,8 @@ type ApiPayload = {
   body?: any;
   id?: string | number;
   timeoutMs?: number;
+  useFormData?: boolean; // FormData 사용 여부
+  formDataFields?: Record<string, any>; // FormData 필드 (useFormData가 true일 때)
 };
 
 class WebViewManagerClass {
@@ -25,6 +27,7 @@ class WebViewManagerClass {
   private rejectById: Map<string | number, (e: any) => void> = new Map();
   private workoutResponseHandler: ((data: any) => void) | null = null;
   private bridgeReady = false;
+  private webViewLoaded = false;
   private queuedRequests: Array<{
     payload: ApiPayload;
     resolve: (v: any) => void;
@@ -38,6 +41,45 @@ class WebViewManagerClass {
     this.webViewRef = ref;
     // 새 WebView가 연결되면 브리지 준비 상태는 초기화
     this.bridgeReady = false;
+    this.webViewLoaded = false;
+  }
+
+  /**
+   * WebView 로드 완료 상태 설정
+   */
+  setWebViewLoaded(loaded: boolean) {
+    this.webViewLoaded = loaded;
+    if (loaded && !this.bridgeReady) {
+      // WebView가 로드되면 브리지 준비 신호 전송 시도
+      this.checkBridgeReady();
+    }
+  }
+
+  /**
+   * 브리지 준비 상태 확인
+   */
+  private checkBridgeReady(): void {
+    if (!this.webViewRef || !this.webViewLoaded) {
+      return;
+    }
+    
+    // 브리지 준비 확인 스크립트 주입
+    try {
+      this.webViewRef.injectJavaScript(`
+        (function() {
+          try {
+            if (window.requestApiFromApp) {
+              window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'api:bridge-ready'
+              }));
+            }
+          } catch(e) {}
+        })();
+        true;
+      `);
+    } catch (e) {
+      console.error('❌ [WebViewManager] 브리지 확인 스크립트 주입 실패:', e);
+    }
   }
 
   /**
@@ -131,31 +173,131 @@ class WebViewManagerClass {
     console.log('🔵 [WebViewManager] API 요청 시작:', { id, method: payload.method, path: payload.path });
 
     return new Promise((resolve, reject) => {
-      // 브리지가 아직 준비되지 않았다면 큐에 쌓고, 준비 신호를 기다린다
+      // 타임아웃 설정
+      const timeoutId = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          this.rejectById.delete(id);
+          reject(new Error('WebView API 요청 타임아웃 (30초)'));
+        }
+      }, payload.timeoutMs || 30000);
+
+      this.pending.set(id, (value: any) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      });
+      this.rejectById.set(id, (error: any) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+
+      // WebView가 로드되지 않았으면 대기
+      if (!this.webViewLoaded) {
+        console.log('⚠️ [WebViewManager] WebView가 아직 로드되지 않음, 대기 중...');
+        // WebView 로드 대기 (최대 5초)
+        const loadCheckInterval = setInterval(() => {
+          if (this.webViewLoaded) {
+            clearInterval(loadCheckInterval);
+            // 로드 완료 후 요청 재시도
+            this.requestApi(payload).then(resolve).catch(reject);
+          }
+        }, 100);
+        
+        setTimeout(() => {
+          clearInterval(loadCheckInterval);
+          if (!this.webViewLoaded) {
+            reject(new Error('WebView가 로드되지 않았습니다. 잠시 후 다시 시도해주세요.'));
+          }
+        }, 5000);
+        return;
+      }
+
+      // 브리지가 아직 준비되지 않았다면 큐에 쌓고, 스크립트를 주입하여 실행 시도
       if (!this.bridgeReady) {
+        console.log('⚠️ [WebViewManager] 브리지가 준비되지 않음, 스크립트 강제 주입 시도');
         this.queuedRequests.push({ payload, resolve, reject });
-        // 경미한 ping으로 브리지 상태 점검
+        // 브리지 준비 확인
+        this.checkBridgeReady();
+        // 스크립트를 강제로 주입하고 실행 시도
         try {
-          this.webViewRef?.injectJavaScript(`
-            try {
-              window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:ping' }));
-            } catch (e) {}
-            true;
-          `);
-        } catch {}
+          this.injectAndExecuteScript(payload, id);
+        } catch (error) {
+          console.error('❌ [WebViewManager] 스크립트 주입 실패:', error);
+        }
         return;
       }
 
       // 브리지가 준비된 경우 즉시 전송
       try {
+        this.injectAndExecuteScript(payload, id);
+      } catch (error) {
+        console.error('❌ [WebViewManager] 스크립트 실행 실패:', error);
+        this.rejectById.get(id)?.(error);
+      }
+    });
+  }
+
+  /**
+   * 스크립트를 주입하고 실행하는 헬퍼 메서드
+   */
+  private injectAndExecuteScript(payload: ApiPayload, id: string | number): void {
+    const reject = this.rejectById.get(id);
+    if (!reject) {
+      console.error('❌ [WebViewManager] reject 함수를 찾을 수 없음:', id);
+      return;
+    }
+    
+    try {
+        // 먼저 스크립트 실행 확인을 위한 테스트 메시지 전송
+        const testScript = `
+          (function() {
+            try {
+              console.log('🔵 [WebView Test Script] 실행됨');
+              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'api:log',
+                  message: '테스트 스크립트 실행 확인: ' + window.location.href
+                }));
+                console.log('🔵 [WebView Test Script] 메시지 전송 완료');
+              } else {
+                console.error('🔵 [WebView Test Script] ReactNativeWebView 없음');
+              }
+            } catch(e) {
+              console.error('🔵 [WebView Test Script] 에러:', e);
+            }
+          })();
+          true;
+        `;
+        
         // 스크립트가 없으면 재주입하고, 있으면 바로 호출
         // 스크립트 재주입용 코드 (injectedGenericApiScript와 동일)
         const ensureScriptAndCall = `
           (function() {
-            // 디버그: 현재 URL 확인
-            console.log('🔵 [WebView Script] 현재 URL:', window.location.href);
-            console.log('🔵 [WebView Script] origin:', window.location.origin);
-            var BACKEND_BASE = ${JSON.stringify(API_CONFIG.BASE_URL)};
+            try {
+              console.log('🔵 [WebView Script] IIFE 시작');
+              // 디버그: 현재 URL 확인
+              console.log('🔵 [WebView Script] 현재 URL:', window.location.href);
+              console.log('🔵 [WebView Script] origin:', window.location.origin);
+              console.log('🔵 [WebView Script] 스크립트 주입됨, payload 확인 중...');
+              
+              // 즉시 실행 확인 메시지 전송
+              try {
+                if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'api:log',
+                    message: 'API 스크립트 실행 시작: ' + window.location.href
+                  }));
+                  console.log('🔵 [WebView Script] 실행 시작 메시지 전송 완료');
+                } else {
+                  console.error('🔵 [WebView Script] ReactNativeWebView.postMessage 없음!');
+                }
+              } catch(msgErr) {
+                console.error('🔵 [WebView Script] 메시지 전송 실패:', msgErr);
+              }
+              
+              var BACKEND_BASE = ${JSON.stringify(API_CONFIG.BASE_URL)};
+              var payload = ${JSON.stringify(payload)};
+              console.log('🔵 [WebView Script] payload:', JSON.stringify(payload).substring(0, 200));
             
             // requestApiFromApp 함수가 없으면 재정의
             if (!window.requestApiFromApp) {
@@ -171,6 +313,8 @@ class WebViewManagerClass {
                   const hasBody = typeof payload.body !== 'undefined' && payload.body !== null;
                   const body = hasBody ? payload.body : null;
                   const id = payload.id || Date.now();
+                  const useFormData = payload.useFormData === true;
+                  const formDataFields = payload.formDataFields || {};
 
                   // 시작/하트비트 신호 전송으로 네이티브 타임아웃 연장
                   try {
@@ -231,6 +375,104 @@ class WebViewManagerClass {
                             reject(new Error('XMLHttpRequest failed'));
                           };
                           xhr.send(JSON.stringify(body));
+                        } catch (xhrError) {
+                          reject(xhrError);
+                        }
+                      });
+                    })();
+                  } else if (useFormData && formDataFields) {
+                    // FormData 사용 (multipart/form-data)
+                    console.log('🔵 [WebView Script] FormData 사용하여 전송');
+                    data = await (function() {
+                      return new Promise(function(resolve, reject) {
+                        try {
+                          const xhr = new XMLHttpRequest();
+                          xhr.open(method, fullUrl, true);
+                          xhr.withCredentials = true;
+                          
+                          const formData = new FormData();
+                          
+                          // formDataFields에서 필드 추가
+                          Object.entries(formDataFields).forEach(function([key, value]) {
+                            if (key === 'postCreateRequest' || key === 'commentRequest' || key === 'postUpdateRequest' || key === 'commentUpdateRequest') {
+                              // JSON 객체를 문자열로 변환하여 전송
+                              // Spring의 @RequestPart는 JSON 문자열을 직접 받을 수 있음
+                              const jsonString = JSON.stringify(value);
+                              console.log('🔵 [WebView Script] JSON part 추가:', key, jsonString.substring(0, 100));
+                              // Blob으로 변환하여 Content-Type: application/json 설정
+                              // Spring은 Blob의 Content-Type을 인식함
+                              const jsonBlob = new Blob([jsonString], { type: 'application/json' });
+                              // 파일명 추가 (Spring @RequestPart 호환성)
+                              formData.append(key, jsonBlob, key + '.json');
+                            } else if (key === 'files' && Array.isArray(value)) {
+                              // 파일 배열 처리 (base64 데이터를 Blob으로 변환)
+                              if (value.length === 0) {
+                                console.log('🔵 [WebView Script] 파일이 없음, files part 생략');
+                                return;
+                              }
+                              value.forEach(function(file, index) {
+                                if (file && file.data && file.name && file.type) {
+                                  console.log('🔵 [WebView Script] 파일 추가:', file.name, file.type);
+                                  // base64를 Blob으로 변환
+                                  const byteCharacters = atob(file.data);
+                                  const byteNumbers = new Array(byteCharacters.length);
+                                  for (let i = 0; i < byteCharacters.length; i++) {
+                                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                                  }
+                                  const byteArray = new Uint8Array(byteNumbers);
+                                  const blob = new Blob([byteArray], { type: file.type });
+                                  formData.append('files', blob, file.name);
+                                } else {
+                                  console.warn('🔵 [WebView Script] 잘못된 파일 데이터:', file);
+                                }
+                              });
+                            } else {
+                              formData.append(key, value);
+                            }
+                          });
+                          
+                          // FormData 내용 확인 (디버깅용)
+                          console.log('🔵 [WebView Script] FormData 생성 완료, 전송 시작');
+                          
+                          xhr.onreadystatechange = function() {
+                            if (xhr.readyState === 4) {
+                              status = xhr.status;
+                              const respText = xhr.responseText || '';
+                              console.log('🔵 [WebView Script] 응답 상태:', status);
+                              console.log('🔵 [WebView Script] 응답 텍스트:', respText.substring(0, 200));
+                              
+                              // 에러 상태 코드 처리
+                              if (status >= 400) {
+                                try {
+                                  const errorData = respText ? JSON.parse(respText) : { status, error: 'Request failed' };
+                                  resolve({ status, ...errorData });
+                                } catch (e) {
+                                  resolve({ status, error: respText || 'Request failed', message: respText });
+                                }
+                                return;
+                              }
+                              
+                              const respCt = (xhr.getResponseHeader && xhr.getResponseHeader('content-type')) || '';
+                              if (respCt.indexOf('application/json') !== -1) {
+                                try { 
+                                  const parsed = JSON.parse(respText);
+                                  resolve(parsed);
+                                }
+                                catch (parseErr) { 
+                                  console.error('🔵 [WebView Script] JSON 파싱 실패:', parseErr);
+                                  resolve(respText); 
+                                }
+                              } else {
+                                resolve(respText);
+                              }
+                            }
+                          };
+                          xhr.onerror = function() {
+                            console.error('🔵 [WebView Script] XMLHttpRequest 에러');
+                            reject(new Error('XMLHttpRequest failed'));
+                          };
+                          console.log('🔵 [WebView Script] FormData 전송 시작');
+                          xhr.send(formData);
                         } catch (xhrError) {
                           reject(xhrError);
                         }
@@ -297,13 +539,38 @@ class WebViewManagerClass {
             }
             
             // 함수 호출 시도 + 인라인 폴백 (함수가 없어도 동작하도록 보장)
+            // FormData 사용 시에는 인라인 폴백을 강제로 사용 (더 안정적)
             try {
-              if (window.requestApiFromApp) {
+              console.log('🔵 [WebView Script] 함수 호출 시도 시작, payload:', JSON.stringify(payload).substring(0, 200));
+              const useFormData = payload.useFormData === true;
+              
+              // FormData 사용 시에는 인라인 폴백을 직접 실행 (더 안정적)
+              if (useFormData) {
+                console.log('🔵 [WebView Script] FormData 사용 → 인라인 폴백 직접 실행');
+                // 인라인 폴백을 즉시 실행 (아래 코드로 계속 진행)
+              } else if (window.requestApiFromApp) {
                 console.log('🔵 [WebView Script] requestApiFromApp 호출 시작');
                 window.requestApiFromApp(${JSON.stringify(JSON.stringify(payload))});
-              } else {
-                console.warn('🔵 [WebView Script] 함수 없음 → 인라인 폴백 수행');
-                (async function(){
+                return; // 함수 호출 성공 시 종료
+              }
+              
+              // 인라인 폴백 실행 (FormData 사용 시 또는 함수가 없을 때)
+              console.log('🔵 [WebView Script] 인라인 폴백 수행 시작');
+              
+              // 즉시 실행 확인 메시지
+              try {
+                if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'api:log',
+                    message: '인라인 폴백 실행 시작'
+                  }));
+                }
+              } catch(e) {
+                console.error('인라인 폴백 시작 메시지 전송 실패:', e);
+              }
+              
+              // 즉시 실행되는 IIFE로 변경 (await 없이 실행)
+              void (async function(){
                   try {
                     const p = ${JSON.stringify(payload)};
                     const method = (p.method || 'GET').toUpperCase();
@@ -313,6 +580,8 @@ class WebViewManagerClass {
                     const hasBody = typeof p.body !== 'undefined' && p.body !== null;
                     const body = hasBody ? p.body : null;
                     const reqId = p.id || ${JSON.stringify(id)};
+                    const useFormData = p.useFormData === true;
+                    const formDataFields = p.formDataFields || {};
                     try {
                       if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
                         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:start', id: reqId }));
@@ -334,7 +603,125 @@ class WebViewManagerClass {
                     const useXhrForGetBody = method === 'GET' && hasBody;
                     var statusCode = 0;
                     var d;
-                    if (useXhrForGetBody) {
+                    if (useFormData && formDataFields) {
+                      // FormData 사용 (multipart/form-data)
+                      console.log('🔵 [WebView Script Fallback] FormData 사용하여 전송');
+                      d = await (function() {
+                        return new Promise(function(resolve, reject) {
+                          try {
+                            var xhr = new XMLHttpRequest();
+                            xhr.open(method, fullUrl, true);
+                            xhr.withCredentials = true;
+                            
+                            var fd = new FormData();
+                            
+                            // formDataFields에서 필드 추가
+                            Object.entries(formDataFields).forEach(function([key, value]) {
+                              if (key === 'postCreateRequest' || key === 'commentRequest' || key === 'postUpdateRequest' || key === 'commentUpdateRequest') {
+                                // JSON 객체를 문자열로 변환하여 전송
+                                // Spring의 @RequestPart는 JSON part에 Content-Type: application/json이 필요
+                                var jsonString = JSON.stringify(value);
+                                console.log('🔵 [WebView Script Fallback] JSON part 추가:', key, jsonString.substring(0, 100));
+                                // Blob으로 변환하여 Content-Type: application/json 설정
+                                // Spring은 Blob의 Content-Type을 인식함
+                                var jsonBlob = new Blob([jsonString], { type: 'application/json' });
+                                // 파일명 없이 Blob 추가 (Spring이 Content-Type으로 인식)
+                                fd.append(key, jsonBlob, key + '.json');
+                              } else if (key === 'files' && Array.isArray(value)) {
+                                // 파일 배열 처리 (base64 데이터를 Blob으로 변환)
+                                if (value.length === 0) {
+                                  console.log('🔵 [WebView Script Fallback] 파일이 없음, files part 생략');
+                                  return;
+                                }
+                                value.forEach(function(file, index) {
+                                  if (file && file.data && file.name && file.type) {
+                                    console.log('🔵 [WebView Script Fallback] 파일 추가:', file.name, file.type);
+                                    // base64를 Blob으로 변환
+                                    var byteCharacters = atob(file.data);
+                                    var byteNumbers = new Array(byteCharacters.length);
+                                    for (var i = 0; i < byteCharacters.length; i++) {
+                                      byteNumbers[i] = byteCharacters.charCodeAt(i);
+                                    }
+                                    var byteArray = new Uint8Array(byteNumbers);
+                                    var blob = new Blob([byteArray], { type: file.type });
+                                    fd.append('files', blob, file.name);
+                                  } else {
+                                    console.warn('🔵 [WebView Script Fallback] 잘못된 파일 데이터:', file);
+                                  }
+                                });
+                              } else {
+                                fd.append(key, value);
+                              }
+                            });
+                            
+                            // FormData 내용 확인 (디버깅용)
+                            console.log('🔵 [WebView Script Fallback] FormData 생성 완료, 전송 시작');
+                            
+                            // 실행 확인 메시지
+                            try {
+                              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({
+                                  type: 'api:log',
+                                  message: 'FormData XMLHttpRequest 전송 시작'
+                                }));
+                              }
+                            } catch(e) {}
+                            
+                            xhr.onreadystatechange = function() {
+                              if (xhr.readyState === 4) {
+                                statusCode = xhr.status;
+                                var respText = xhr.responseText || '';
+                                console.log('🔵 [WebView Script Fallback] 응답 상태:', statusCode);
+                                console.log('🔵 [WebView Script Fallback] 응답 텍스트:', respText.substring(0, 200));
+                                
+                                // 실행 확인 메시지
+                                try {
+                                  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                                      type: 'api:log',
+                                      message: 'FormData 응답 수신: ' + statusCode
+                                    }));
+                                  }
+                                } catch(e) {}
+                                
+                                // 에러 상태 코드 처리
+                                if (statusCode >= 400) {
+                                  try {
+                                    var errorData = respText ? JSON.parse(respText) : { status: statusCode, error: 'Request failed' };
+                                    resolve({ status: statusCode, ...errorData });
+                                  } catch (e) {
+                                    resolve({ status: statusCode, error: respText || 'Request failed', message: respText });
+                                  }
+                                  return;
+                                }
+                                
+                                var respCt = (xhr.getResponseHeader && xhr.getResponseHeader('content-type')) || '';
+                                if (respCt.indexOf('application/json') !== -1) {
+                                  try { 
+                                    var parsed = JSON.parse(respText);
+                                    resolve(parsed);
+                                  }
+                                  catch (parseErr) { 
+                                    console.error('🔵 [WebView Script Fallback] JSON 파싱 실패:', parseErr);
+                                    resolve(respText); 
+                                  }
+                                } else {
+                                  resolve(respText);
+                                }
+                              }
+                            };
+                            xhr.onerror = function() {
+                              console.error('🔵 [WebView Script Fallback] XMLHttpRequest 에러');
+                              reject(new Error('XMLHttpRequest failed'));
+                            };
+                            console.log('🔵 [WebView Script Fallback] FormData 전송 시작');
+                            xhr.send(fd);
+                          } catch (xhrError) {
+                            reject(xhrError);
+                          }
+                        });
+                      })();
+                    } else if (useXhrForGetBody) {
                       console.log('🔵 [WebView Script Fallback] GET + body → XMLHttpRequest 사용');
                       d = await (function() {
                         return new Promise(function(resolve, reject) {
@@ -377,8 +764,14 @@ class WebViewManagerClass {
                       const ct = r.headers.get('content-type') || '';
                       if (ct.indexOf('application/json') > -1) { d = await r.json(); } else { d = await r.text(); }
                     }
+                    console.log('🔵 [WebView Script Fallback] 응답 준비 완료, postMessage 전송');
                     if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:success', id: reqId, status: statusCode || 200, data: d }));
+                      const responseMsg = { type: 'api:success', id: reqId, status: statusCode || 200, data: d };
+                      console.log('🔵 [WebView Script Fallback] postMessage:', JSON.stringify(responseMsg).substring(0, 200));
+                      window.ReactNativeWebView.postMessage(JSON.stringify(responseMsg));
+                      console.log('🔵 [WebView Script Fallback] postMessage 전송 완료');
+                    } else {
+                      console.error('🔵 [WebView Script Fallback] ReactNativeWebView.postMessage 없음!');
                     }
                     try { clearInterval(__wv_hb2); } catch (e) {}
                   } catch (e) {
@@ -392,16 +785,29 @@ class WebViewManagerClass {
             } catch (e) {
               console.error('🔵 [WebView Script] 호출 단계 예외:', e);
               if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:error', id: ${JSON.stringify(id)}, message: (e && e.message) || String(e) }));
+                window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                  type: 'api:error', 
+                  id: ${JSON.stringify(id)}, 
+                  message: (e && e.message) || String(e) 
+                }));
               }
             }
           })();
+          
+          // 실행 확인
+          console.log('🔵 [WebView Script] 스크립트 실행 완료');
           true;
         `;
         
         console.log('🔵 [WebViewManager] 스크립트 주입 시작');
         console.log('🔵 [WebViewManager] WebView ref 존재:', !!this.webViewRef);
         console.log('🔵 [WebViewManager] injectJavaScript 호출 가능:', typeof this.webViewRef?.injectJavaScript === 'function');
+        console.log('🔵 [WebViewManager] payload 요약:', {
+          method: payload.method,
+          path: payload.path,
+          useFormData: payload.useFormData,
+          hasFiles: payload.formDataFields?.files?.length > 0,
+        });
         
         // WebView의 현재 URL을 확인하는 스크립트 먼저 실행
         const checkUrlScript = `
@@ -422,62 +828,61 @@ class WebViewManagerClass {
         setTimeout(() => {
           try {
             if (this.webViewRef && typeof this.webViewRef.injectJavaScript === 'function') {
-              // 먼저 URL 확인
-              this.webViewRef.injectJavaScript(checkUrlScript);
+              // 먼저 테스트 스크립트 실행
+              this.webViewRef.injectJavaScript(testScript);
+              console.log('🔵 [WebViewManager] 테스트 스크립트 주입 완료');
               
-              // 그 다음 실제 API 스크립트 주입
+              // 그 다음 URL 확인
               setTimeout(() => {
                 if (this.webViewRef && typeof this.webViewRef.injectJavaScript === 'function') {
-                  this.webViewRef.injectJavaScript(ensureScriptAndCall);
-                  console.log('🔵 [WebViewManager] 스크립트 주입 완료');
+                  this.webViewRef.injectJavaScript(checkUrlScript);
+                  console.log('🔵 [WebViewManager] URL 확인 스크립트 주입 완료');
+                  
+                  // 그 다음 실제 API 스크립트 주입
+                  setTimeout(() => {
+                    if (this.webViewRef && typeof this.webViewRef.injectJavaScript === 'function') {
+                      console.log('🔵 [WebViewManager] API 스크립트 주입 시작...');
+                      this.webViewRef.injectJavaScript(ensureScriptAndCall);
+                      console.log('🔵 [WebViewManager] API 스크립트 주입 완료');
+                      
+                      // 스크립트 실행 확인을 위한 추가 확인 (2초 후)
+                      setTimeout(() => {
+                        if (this.pending.has(id)) {
+                          console.warn('⚠️ [WebViewManager] 스크립트 실행 후 응답 없음, 재시도...');
+                          // 재시도
+                          if (this.webViewRef && typeof this.webViewRef.injectJavaScript === 'function') {
+                            this.webViewRef.injectJavaScript(ensureScriptAndCall);
+                          }
+                        }
+                      }, 2000);
+                    } else {
+                      console.error('🔵 [WebViewManager] WebView ref가 유효하지 않음 (3차 시도)');
+                      const rejectFn = this.rejectById.get(id);
+                      if (rejectFn) rejectFn(new Error('WebView is not ready'));
+                    }
+                  }, 300);
                 } else {
                   console.error('🔵 [WebViewManager] WebView ref가 유효하지 않음 (2차 시도)');
-                  reject(new Error('WebView is not ready'));
+                  const rejectFn = this.rejectById.get(id);
+                  if (rejectFn) rejectFn(new Error('WebView is not ready'));
                 }
-              }, 50);
+              }, 200);
             } else {
               console.error('🔵 [WebViewManager] WebView ref가 유효하지 않음');
-              reject(new Error('WebView is not ready'));
+              const rejectFn = this.rejectById.get(id);
+              if (rejectFn) rejectFn(new Error('WebView is not ready'));
             }
           } catch (e) {
             console.error('🔵 [WebViewManager] 스크립트 주입 실패:', e);
-            reject(e);
+            const rejectFn = this.rejectById.get(id);
+            if (rejectFn) rejectFn(e);
           }
         }, 100);
-      } catch (e) {
-        console.error('🔵 [WebViewManager] 스크립트 주입 실패:', e);
-        reject(e);
-      }
-
-      // 타임아웃 등록 (추천/LLM 계열은 더 길게)
-      const isHeavy = typeof payload.path === 'string' && (
-        payload.path.indexOf('/api/recommend/') === 0 ||
-        payload.path.indexOf('/api/food/recommend') === 0 ||
-        payload.path.indexOf('/api/food/recipe/recommend') === 0
-      );
-      // 타임아웃 단축: 무거운 요청 8초, 일반 5초
-      const timeoutMs = payload.timeoutMs ?? (isHeavy ? 8000 : 5000);
-      this.timeoutMsById.set(id, timeoutMs);
-
-      // pending 등록과 타이머는 전송 직전에 설정
-      this.pending.set(id, resolve);
-      this.rejectById.set(id, reject);
-      const prev = this.timeouts.get(id);
-      if (prev) { try { clearTimeout(prev); } catch (e) {} }
-      const timer = setTimeout(() => {
-        if (this.pending.has(id)) {
-          console.error('🔵 [WebViewManager] 타임아웃 발생:', { id, method: payload.method, path: payload.path, timeoutMs });
-          this.pending.delete(id);
-          const rej = this.rejectById.get(id);
-          if (rej) {
-            try { rej(new Error('WebView API request timeout')); } catch (e) {}
-          }
-          this.rejectById.delete(id);
-          this.timeoutMsById.delete(id);
-        }
-      }, timeoutMs);
-      this.timeouts.set(id, timer);
-    });
+    } catch (e) {
+      console.error('🔵 [WebViewManager] 스크립트 주입 실패:', e);
+      const rejectFn = this.rejectById.get(id);
+      if (rejectFn) rejectFn(e);
+    }
   }
 
   /**
@@ -488,6 +893,7 @@ class WebViewManagerClass {
 
     // 브리지 준비 신호 처리 (id 없음)
     if (type === 'api:bridge-ready') {
+      console.log('✅ [WebViewManager] 브리지 준비 완료');
       this.bridgeReady = true;
       // 큐 비우기: 대기 중이던 요청들을 순차 전송
       const queued = this.queuedRequests.slice();
@@ -498,8 +904,16 @@ class WebViewManagerClass {
       return;
     }
 
-    // api:log 같은 로그 메시지는 무시
-    if (type === 'api:log' || type === 'api:ping') {
+    // api:log 같은 로그 메시지는 로깅만 하고 무시
+    if (type === 'api:log') {
+      const message = (data as Record<string, unknown>).message;
+      if (typeof message === 'string') {
+        console.log('📝 [WebViewManager] WebView 로그:', message);
+      }
+      return;
+    }
+    
+    if (type === 'api:ping') {
       return;
     }
 
@@ -540,8 +954,56 @@ class WebViewManagerClass {
 
     this.pending.delete(id);
     if (type === 'api:success') {
-      // data.data가 없으면 전체 payload를 반환 (문자열/텍스트 응답 지원)
-      resolver(Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data);
+      // 백엔드 응답 형식: Api<T> = { errorCode, description, value }
+      // 또는 Spring 에러 응답: { timestamp, status, error, path }
+      const responseData = Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data;
+      
+      // Spring 에러 응답 확인 (400, 500 등)
+      if (data.status && data.status >= 400) {
+        const errorMessage = data.error || data.message || '요청에 실패했습니다.';
+        resolver({
+          error: true,
+          status: data.status,
+          message: errorMessage,
+          ...data,
+        });
+        return;
+      }
+      
+      // 백엔드 Api<T> 형식 확인
+      if (responseData && typeof responseData === 'object' && responseData !== null) {
+        const responseObj = responseData as Record<string, unknown>;
+        
+        // Api<T> 형식: { errorCode, description, value }
+        if ('value' in responseObj) {
+          resolver(responseObj.value);
+          return;
+        }
+        
+        // 에러 응답: { errorCode, description, value: null }
+        if ('errorCode' in responseObj) {
+          const errorCode = responseObj.errorCode;
+          if (typeof errorCode === 'number' && errorCode !== 200) {
+            resolver({
+              error: true,
+              errorCode,
+              description: typeof responseObj.description === 'string' ? responseObj.description : undefined,
+              ...responseObj,
+            });
+            return;
+          }
+        }
+      }
+      
+      // 일반 응답
+      resolver(responseData);
+    } else if (type === 'api:error') {
+      // 에러 응답
+      resolver({
+        error: true,
+        message: data.message || '요청에 실패했습니다.',
+        ...data,
+      });
     } else {
       resolver({
         error: true,

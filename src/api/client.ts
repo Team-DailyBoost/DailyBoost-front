@@ -16,7 +16,14 @@
  * 이렇게 하면 WebView에서 받은 쿠키를 axios 요청에 사용할 수 있습니다.
  */
 import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  getAccessToken,
+  setAccessToken,
+  getRefreshToken,
+  setRefreshToken,
+  getSessionCookie,
+  clearAllAuth,
+} from '../utils/storage';
 
 const BASE_URL = 'https://dailyboost.duckdns.org';
 
@@ -50,8 +57,18 @@ const client: AxiosInstance = axios.create({
 client.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
+      // FormData를 사용하는 경우 Content-Type을 제거하여 axios가 자동으로 설정하도록 함
+      // React Native에서 FormData 사용 시 boundary를 포함한 올바른 Content-Type이 필요함
+      if (config.data instanceof FormData) {
+        // Content-Type을 undefined로 설정하여 axios가 자동으로 boundary를 포함한 Content-Type을 설정하도록 함
+        if (config.headers) {
+          delete config.headers['Content-Type'];
+          delete config.headers['content-type'];
+        }
+      }
+
       // JWT 토큰 확인 (우선)
-      const token = await AsyncStorage.getItem('@accessToken');
+      const token = await getAccessToken();
       
       if (token) {
         // JWT 토큰이 있으면 Authorization 헤더에 추가
@@ -63,7 +80,7 @@ client.interceptors.request.use(
       } else {
         // JWT 토큰이 없으면 세션 쿠키 확인
         // WebView에서 추출한 쿠키를 여기서 사용합니다.
-        const cookie = await AsyncStorage.getItem('@sessionCookie');
+        const cookie = await getSessionCookie();
         
         if (cookie) {
           // 쿠키가 있으면 Cookie 헤더에 추가
@@ -125,7 +142,7 @@ client.interceptors.response.use(
       console.log('⚠️ HTML 로그인 페이지 응답 감지 - 인증 실패로 처리');
       
       // 인증 정보 삭제
-      await AsyncStorage.multiRemove(['@accessToken', '@refreshToken', '@sessionCookie']);
+      await clearAllAuth();
       
       // 에러로 변환
       const error: any = new Error('인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.');
@@ -143,7 +160,7 @@ client.interceptors.response.use(
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        await AsyncStorage.setItem('@accessToken', token);
+        await setAccessToken(token);
         console.log('✅ 응답에서 JWT 토큰 수신 및 저장');
       }
     }
@@ -153,7 +170,7 @@ client.interceptors.response.use(
     if (refreshHeader) {
       const refreshToken = refreshHeader.replace('Bearer ', '').trim();
       if (refreshToken) {
-        await AsyncStorage.setItem('@refreshToken', refreshToken);
+        await setRefreshToken(refreshToken);
         console.log('✅ 응답에서 Refresh Token 수신 및 저장');
       }
     }
@@ -166,7 +183,7 @@ client.interceptors.response.use(
       console.log('⚠️ 인증 오류 발생 - 인증 정보 삭제');
       
       // 인증 정보 삭제
-      await AsyncStorage.multiRemove(['@accessToken', '@refreshToken', '@sessionCookie']);
+      await clearAllAuth();
       
       // 로그인 화면으로 이동하는 로직은 각 컴포넌트에서 처리
     }

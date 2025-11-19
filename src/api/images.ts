@@ -45,9 +45,11 @@ export async function uploadProfileImage(
     type: mimeType || 'image/jpeg',
   } as any);
 
+  // FormData를 사용할 때는 Content-Type을 설정하지 않음
+  // axios가 자동으로 boundary를 포함한 올바른 Content-Type을 설정함
   const response = await client.post<ApiResponse<MessageResponse>>('/api/image/upload', formData, {
     headers: {
-      'Content-Type': 'multipart/form-data',
+      'Content-Type': undefined, // React Native에서 FormData 사용 시 자동 설정되도록
     },
   });
   

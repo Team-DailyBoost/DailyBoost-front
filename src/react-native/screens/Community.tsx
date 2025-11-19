@@ -695,8 +695,8 @@ export function Community() {
   };
 
   const handleAddComment = async () => {
-    if (!selectedPost || !newComment.trim()) {
-      Alert.alert('알림', '댓글을 입력해주세요');
+    if (!selectedPost || (!newComment.trim() && !commentImage)) {
+      Alert.alert('알림', '댓글 내용 또는 이미지를 입력해주세요');
       return;
     }
 
@@ -704,32 +704,29 @@ export function Community() {
     try {
       let res;
       
-      // 이미지가 있으면 FormData로 전송
+      // 백엔드가 @RequestPart를 사용하므로 항상 FormData로 전송
+      const formData = new FormData();
+      formData.append('commentRequest', JSON.stringify({
+        postId: Number(selectedPost.id),
+        content: newComment.trim() || ' ',
+      }));
+      
+      // 이미지가 있으면 file 추가
       if (commentImage) {
-        const formData = new FormData();
-        formData.append('commentRequest', JSON.stringify({
-          postId: Number(selectedPost.id),
-          content: newComment.trim(),
-        }));
-        
         formData.append('file', {
           uri: commentImage.uri,
           name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
           type: commentImage.mimeType || 'image/jpeg',
         } as any);
-        
-        res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-      } else {
-        // 이미지가 없으면 기존 방식대로 전송
-        res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, {
-          postId: Number(selectedPost.id),
-          content: newComment.trim(),
-        });
       }
+      
+      // FormData를 사용할 때는 Content-Type을 설정하지 않음
+      // axios가 자동으로 boundary를 포함한 올바른 Content-Type을 설정함
+      res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, formData, {
+        headers: {
+          'Content-Type': undefined, // React Native에서 FormData 사용 시 자동 설정되도록
+        },
+      });
 
       if (res.success) {
         // 백엔드 성공 시 댓글 목록 새로고침
@@ -1727,8 +1724,12 @@ export function Community() {
               <Button
                 title="작성하기"
                 onPress={async () => {
-                  if (!newPost.title || !newPost.content) {
-                    Alert.alert('알림', '제목과 내용을 입력해주세요');
+                  if (!newPost.title.trim()) {
+                    Alert.alert('알림', '제목을 입력해주세요');
+                    return;
+                  }
+                  if (!newPost.content.trim() && postImages.length === 0) {
+                    Alert.alert('알림', '내용 또는 이미지를 입력해주세요');
                     return;
                   }
 
@@ -1742,8 +1743,8 @@ export function Community() {
 
                   const payload = {
                     postKind: categoryMap[newPost.category] || 'DIET',
-                    title: newPost.title,
-                    content: newPost.content,
+                    title: newPost.title.trim(),
+                    content: newPost.content.trim() || ' ',
                   };
 
                   const uploadFiles = postImages.map((asset, index) => ({

@@ -1,9 +1,17 @@
-import { getApiUrl, API_CONFIG } from '../config/api';
+import { API_CONFIG } from '../config/api';
 export { API_CONFIG } from '../config/api';
-
-const ACCESS_TOKEN_KEYS = ['@accessToken', 'authToken'] as const;
-const REFRESH_TOKEN_KEYS = ['@refreshToken', 'refreshToken'] as const;
-const SESSION_COOKIE_KEYS = ['@sessionCookie', 'JSESSIONID'] as const;
+import {
+  getAccessToken,
+  setAccessToken,
+  removeAccessToken,
+  getRefreshToken,
+  setRefreshToken,
+  removeRefreshToken,
+  getSessionCookie,
+  setSessionCookie,
+  removeSessionCookie,
+  clearAllAuth,
+} from '../utils/storage';
 
 /**
  * API Response wrapper
@@ -29,98 +37,49 @@ class ApiClient {
    * Get auth token from storage
    */
   private async getToken(): Promise<string | null> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      for (const key of ACCESS_TOKEN_KEYS) {
-        const value = await AsyncStorage.getItem(key);
-        if (value && value.trim().length > 0) {
-          return value;
-        }
-      }
-      return null;
-    } catch (error) {
-      return null;
-    }
+    return getAccessToken();
   }
   
   /**
    * Set auth token to storage
    */
   private async setToken(token: string): Promise<void> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await Promise.all(ACCESS_TOKEN_KEYS.map((key) => AsyncStorage.setItem(key, token)));
-    } catch (error) {
-      // Ignore error
-    }
+    return setAccessToken(token);
   }
   
   /**
    * Remove auth token from storage
    */
   private async removeToken(): Promise<void> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await Promise.all(ACCESS_TOKEN_KEYS.map((key) => AsyncStorage.removeItem(key)));
-    } catch (error) {
-      // Ignore error
-    }
+    return removeAccessToken();
   }
 
   /**
    * Remove refresh token from storage
    */
-  private async removeRefreshToken(): Promise<void> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await Promise.all(REFRESH_TOKEN_KEYS.map((key) => AsyncStorage.removeItem(key)));
-    } catch (error) {
-      // Ignore error
-    }
+  private async removeRefreshTokenFromStorage(): Promise<void> {
+    return removeRefreshToken();
   }
   
   /**
    * Get JSESSIONID cookie from storage
    */
   private async getSessionCookie(): Promise<string | null> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      for (const key of SESSION_COOKIE_KEYS) {
-        const cookie = await AsyncStorage.getItem(key);
-        if (cookie && cookie.trim().length > 0) {
-          return cookie;
-        }
-      }
-      return null;
-    } catch (error) {
-      return null;
-    }
+    return getSessionCookie();
   }
   
   /**
    * Set JSESSIONID cookie to storage
    */
   async setSessionCookie(cookie: string): Promise<void> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      // JSESSIONID=ABC123 형식에서 값만 추출
-      const sessionId = cookie.includes('=') ? cookie.split('=')[1].split(';')[0] : cookie;
-      await Promise.all(SESSION_COOKIE_KEYS.map((key) => AsyncStorage.setItem(key, sessionId)));
-    } catch (error) {
-      // Ignore error
-    }
+    return setSessionCookie(cookie);
   }
   
   /**
    * Remove JSESSIONID cookie from storage
    */
   private async removeSessionCookie(): Promise<void> {
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await Promise.all(SESSION_COOKIE_KEYS.map((key) => AsyncStorage.removeItem(key)));
-    } catch (error) {
-      // Ignore error
-    }
+    return removeSessionCookie();
   }
   
   
@@ -134,11 +93,36 @@ class ApiClient {
     try {
       const token = await this.getToken();
       
+      // FormData인 경우 Content-Type을 설정하지 않음 (React Native가 자동으로 boundary 포함)
+      const isFormData = options.body instanceof FormData;
+      const customHeaders = options.headers as Record<string, string> | undefined;
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
         'Accept': 'application/json',
-        ...(options.headers as Record<string, string>),
       };
+      
+      // FormData가 아닌 경우에만 Content-Type 설정
+      if (!isFormData) {
+        // 사용자가 명시적으로 Content-Type을 설정한 경우 사용
+        if (customHeaders?.['Content-Type'] !== undefined && customHeaders['Content-Type'] !== 'undefined') {
+          headers['Content-Type'] = customHeaders['Content-Type'];
+        } else {
+          headers['Content-Type'] = 'application/json';
+        }
+      }
+      
+      // FormData가 아닌 다른 헤더들 추가 (Content-Type은 이미 처리됨)
+      if (customHeaders) {
+        Object.entries(customHeaders).forEach(([key, value]) => {
+          // FormData인 경우 Content-Type은 제외
+          if (isFormData && key.toLowerCase() === 'content-type') {
+            return;
+          }
+          // undefined가 아닌 값만 추가
+          if (value !== undefined && value !== 'undefined') {
+            headers[key] = value;
+          }
+        });
+      }
       
       // JWT Bearer 토큰 사용 (세션 쿠키보다 우선)
       // JWT 토큰이 있으면 Authorization 헤더에 포함
@@ -218,15 +202,8 @@ class ApiClient {
       if (refreshHeader) {
         const refreshToken = refreshHeader.replace('Bearer ', '').trim();
         if (refreshToken) {
-          try {
-            const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-            await Promise.all(
-              REFRESH_TOKEN_KEYS.map((key) => AsyncStorage.setItem(key, refreshToken))
-            );
-            console.log('✅ 응답에서 Refresh Token 수신');
-          } catch (error) {
-            // Ignore error
-          }
+          await setRefreshToken(refreshToken);
+          console.log('✅ 응답에서 Refresh Token 수신');
         }
       }
       
@@ -305,7 +282,7 @@ class ApiClient {
             // 하지만 200 응답이므로 Spring Security가 리다이렉트한 것일 수 있음
             
             // 세션 쿠키 제거하여 재로그인 유도
-            await this.removeSessionCookie();
+            await removeSessionCookie();
             
             data = { 
               success: false, 
@@ -354,16 +331,14 @@ class ApiClient {
       
       // HTML 로그인 페이지가 반환된 경우 (인증 오류)
       if (isLoginPage) {
-        await this.clearAuthToken();
-        await this.removeSessionCookie();
+        await clearAllAuth();
         throw new Error('인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.');
       }
       
       if (!response.ok) {
         // 인증 오류인 경우
         if (response.status === 401 || response.status === 403) {
-          await this.clearAuthToken();
-          await this.removeSessionCookie();
+          await clearAllAuth();
           throw new Error('인증이 만료되었습니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.');
         }
         
@@ -457,10 +432,13 @@ class ApiClient {
   /**
    * POST request
    */
-  async post<T = any>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  async post<T = any>(endpoint: string, data?: any, options?: RequestInit): Promise<ApiResponse<T>> {
+    // FormData인 경우 JSON.stringify 하지 않음
+    const body = data instanceof FormData ? data : JSON.stringify(data);
     return this.request<T>(endpoint, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body,
+      ...options,
     });
   }
   
@@ -502,9 +480,7 @@ class ApiClient {
    * Clear authentication token
    */
   async clearAuthToken(): Promise<void> {
-    await this.removeToken();
-    await this.removeRefreshToken();
-    await this.removeSessionCookie();
+    await clearAllAuth();
   }
   
   /**
@@ -516,11 +492,11 @@ class ApiClient {
     // Spring Security의 기본 로그아웃: POST /logout
     try {
       const response = await this.post(API_CONFIG.ENDPOINTS.LOGOUT || '/logout');
-      await this.clearAuthToken();
+      await clearAllAuth();
       return response;
     } catch (error) {
       // 로그아웃 실패해도 클라이언트에서는 세션 정리
-      await this.clearAuthToken();
+      await clearAllAuth();
       return { success: true, data: { message: '로그아웃되었습니다.' } };
     }
   }
@@ -533,7 +509,7 @@ export const apiClient = new ApiClient(API_CONFIG.BASE_URL);
 export const api = {
   get: <T = any>(endpoint: string, params?: Record<string, any>) => apiClient.get<T>(endpoint, params),
   getWithBody: <T = any>(endpoint: string, data?: any) => apiClient.getWithBody<T>(endpoint, data),
-  post: <T = any>(endpoint: string, data?: any) => apiClient.post<T>(endpoint, data),
+  post: <T = any>(endpoint: string, data?: any, options?: RequestInit) => apiClient.post<T>(endpoint, data, options),
   put: <T = any>(endpoint: string, data?: any) => apiClient.put<T>(endpoint, data),
   patch: <T = any>(endpoint: string, data?: any) => apiClient.patch<T>(endpoint, data),
   delete: <T = any>(endpoint: string) => apiClient.delete<T>(endpoint),

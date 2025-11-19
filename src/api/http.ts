@@ -106,7 +106,8 @@ export async function requestWithWebViewFallback<T = any>(
       const isHeavy =
         path.indexOf('/api/recommend/') === 0 ||
         path.indexOf('/api/food/recommend') === 0 ||
-        path.indexOf('/api/food/recipe/recommend') === 0;
+        path.indexOf('/api/food/recipe/recommend') === 0 ||
+        path.indexOf('/api/exercise/recommend') === 0;
 
       const viaWebView = await WebViewManager.requestApi({
         method,

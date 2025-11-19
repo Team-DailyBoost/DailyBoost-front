@@ -36,6 +36,11 @@ export interface ExerciseRecommendationItem {
 }
 
 /**
+ * Exercise Recommendation 타입 (registerExercise 함수에서 사용)
+ */
+export type ExerciseRecommendation = ExerciseRecommendationItem;
+
+/**
  * Exercise Request 타입
  * Swagger 명세의 components.schemas.ExerciseRequest을 그대로 옮긴 것입니다.
  */
@@ -47,10 +52,10 @@ export interface ExerciseRequest {
 
 /**
  * 운동 추천
- * 표준 스펙: POST /api/recommend/exercise
+ * 백엔드 스펙: GET /api/exercise/recommend (⚠️ @RequestBody 있음 - 비표준)
  *
- * 백엔드에 해당 엔드포인트가 없으면 404가 발생하며,
- * WorkoutService 쪽에서 기본 추천으로 대체합니다.
+ * Spring Boot는 GET 요청의 body를 읽을 수 없으므로,
+ * WebView에서 POST로 시도합니다. POST가 405로 실패하면 GET으로 폴백합니다.
  */
 export async function getExerciseRecommendation(
   userInput: string,
@@ -58,11 +63,29 @@ export async function getExerciseRecommendation(
   part: ExerciseRequest['part'] = 'HOME_TRAINING'
 ): Promise<ExerciseRecommendationItem[]> {
   const request: ExerciseRequest = { userInput, level, part };
-  const path = API_CONFIG.ENDPOINTS?.EXERCISE_RECOMMEND ?? '/api/recommend/exercise';
+  const path = API_CONFIG.ENDPOINTS?.EXERCISE_RECOMMEND ?? '/api/exercise/recommend';
 
-  return requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', path, {
-    body: request,
-  });
+  try {
+    // WebView에서 POST로 먼저 시도 (Spring에서 body를 읽을 수 있음)
+    return await requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', path, {
+      body: request,
+    });
+  } catch (error: any) {
+    // POST가 405로 실패하면 GET으로 폴백 (WebView의 XMLHttpRequest는 GET + body 지원)
+    const errorMessage = String(error?.message || '').toLowerCase();
+    const errorData = error?.error || error;
+    const is405 = errorMessage.includes('405') || 
+                  errorMessage.includes('method not allowed') ||
+                  (errorData && typeof errorData === 'object' && errorData.status === 405);
+    
+    if (is405) {
+      console.log('⚠️ POST 실패 (405), GET으로 WebView 폴백 시도:', path);
+      return await requestWithWebViewFallback<ExerciseRecommendationItem[]>('GET', path, {
+        body: request,
+      });
+    }
+    throw error;
+  }
 }
 
 /**

@@ -16,6 +16,8 @@ import { MyPage } from './src/react-native/screens/MyPage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoginScreen } from './src/react-native/screens/Auth/Login';
 import { BackgroundWebView } from './src/react-native/components/BackgroundWebView';
+import { WelcomeScreen } from './src/react-native/components/WelcomeScreen';
+import { LoginLoadingScreen } from './src/react-native/components/LoginLoadingScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -32,8 +34,19 @@ function AuthNavigator({ onLoggedIn }: { onLoggedIn: () => void }) {
 }
 
 // 메인 탭 네비게이터 (로그인 후 화면)
-function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
+function MainTabs({ onLoggedOut, onReady }: { onLoggedOut: () => void; onReady?: () => void }) {
   const insets = useSafeAreaInsets();
+  
+  useEffect(() => {
+    // 홈화면이 준비되면 콜백 호출
+    if (onReady) {
+      // 약간의 지연을 두어 화면이 완전히 렌더링된 후 로딩 화면 닫기
+      const timer = setTimeout(() => {
+        onReady();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [onReady]);
   
   return (
     <Tab.Navigator
@@ -97,6 +110,8 @@ function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
 
 export default function App() {
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   useEffect(() => {
     // Android 네비게이션 바 표시 (앱 네비게이션 바 위에 배치하기 위해)
@@ -137,6 +152,20 @@ export default function App() {
     };
   }, []);
 
+  // 환영 화면 표시
+  if (showWelcome) {
+    return (
+      <>
+        <StatusBar 
+          barStyle="light-content" 
+          backgroundColor="#6366f1" 
+          hidden={false}
+        />
+        <WelcomeScreen onComplete={() => setShowWelcome(false)} />
+      </>
+    );
+  }
+
   if (isAuthed === null) {
     // 초기 로딩 표시
     return (
@@ -173,12 +202,27 @@ export default function App() {
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           {!isAuthed ? (
             <Stack.Screen name="Auth">
-              {() => <AuthNavigator onLoggedIn={() => setIsAuthed(true)} />}
+              {() => (
+                <AuthNavigator 
+                  onLoggedIn={() => {
+                    setIsLoggingIn(true);
+                    setIsAuthed(true);
+                  }} 
+                />
+              )}
             </Stack.Screen>
           ) : (
             <>
               <Stack.Screen name="MainTabs">
-                {() => <MainTabs onLoggedOut={() => setIsAuthed(false)} />}
+                {() => (
+                  <MainTabs 
+                    onLoggedOut={() => {
+                      setIsAuthed(false);
+                      setIsLoggingIn(false);
+                    }}
+                    onReady={() => setIsLoggingIn(false)}
+                  />
+                )}
               </Stack.Screen>
               {/* 로그인 완료 후에도 LoginScreen을 렌더링하여 WebView 유지 (화면에서는 숨김) */}
               <Stack.Screen 
@@ -201,6 +245,8 @@ export default function App() {
         </Stack.Navigator>
       </NavigationContainer>
       {isAuthed && <BackgroundWebView />}
+      {/* 로그인 완료 후 홈화면이 준비될 때까지 로딩 화면 표시 */}
+      {isLoggingIn && <LoginLoadingScreen />}
     </SafeAreaProvider>
   );
 }

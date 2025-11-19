@@ -171,8 +171,8 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       try {
         setShowWebView(false);
         setWebViewLoading(false);
-        setCurrentProvider(null);
-        setLoading(false);
+        // 로딩 상태는 유지 (App.tsx에서 홈화면 준비 후 닫음)
+        // setLoading(false); // 주석 처리 - App.tsx에서 관리
 
         let normalizedAccess: string | null = null;
 
@@ -486,6 +486,7 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     handledAuthRef.current = false;
     setCurrentProvider(provider);
     currentProviderRef.current = provider;
+    setLoading(true);
     setWebViewUrl(`${API_CONFIG.BASE_URL}/oauth2/authorization/${provider}`);
     setShowWebView(true);
     setWebViewLoading(true);

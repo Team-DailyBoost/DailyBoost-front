@@ -134,10 +134,20 @@ export function BackgroundWebView() {
 
   const handleMessage = (event: any) => {
     const raw = event.nativeEvent?.data;
-    if (!raw) return;
+    if (!raw) {
+      console.warn('⚠️ [BackgroundWebView] 빈 메시지 수신');
+      return;
+    }
+    
     try {
       const data = JSON.parse(raw);
       const t = data?.type;
+      
+      // 모든 메시지 로깅 (디버깅용)
+      if (__DEV__) {
+        console.log('📨 [BackgroundWebView] 메시지 수신:', t, data?.id || data?.message || '');
+      }
+      
       if (typeof t === 'string' && t.startsWith('api:')) {
         WebViewManager.handleGenericApiResponse(data);
         return;
@@ -146,9 +156,49 @@ export function BackgroundWebView() {
         WebViewManager.handleWorkoutResponse?.(data);
         return;
       }
-    } catch {
-      // ignore non-JSON
+    } catch (e) {
+      // JSON 파싱 실패 시 원본 로깅
+      if (__DEV__) {
+        console.warn('⚠️ [BackgroundWebView] JSON 파싱 실패:', raw.substring(0, 100));
+      }
     }
+  };
+
+  const handleLoadEnd = () => {
+    console.log('✅ [BackgroundWebView] WebView 로드 완료');
+    WebViewManager.setWebViewLoaded(true);
+    // 브리지 준비 확인
+    if (ref.current) {
+      setTimeout(() => {
+        try {
+          ref.current?.injectJavaScript(`
+            (function() {
+              try {
+                if (window.requestApiFromApp) {
+                  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'api:bridge-ready'
+                  }));
+                }
+              } catch(e) {}
+            })();
+            true;
+          `);
+        } catch (e) {
+          console.error('❌ [BackgroundWebView] 브리지 확인 실패:', e);
+        }
+      }, 500);
+    }
+  };
+
+  const handleLoadStart = () => {
+    console.log('🔄 [BackgroundWebView] WebView 로드 시작');
+    WebViewManager.setWebViewLoaded(false);
+  };
+
+  const handleError = (syntheticEvent: any) => {
+    const { nativeEvent } = syntheticEvent;
+    console.error('❌ [BackgroundWebView] WebView 에러:', nativeEvent);
+    WebViewManager.setWebViewLoaded(false);
   };
 
   return (
@@ -158,9 +208,13 @@ export function BackgroundWebView() {
         source={{ uri: API_CONFIG.BASE_URL + '/' }}
         injectedJavaScript={injectedGenericApiScript}
         onMessage={handleMessage}
+        onLoadEnd={handleLoadEnd}
+        onLoadStart={handleLoadStart}
+        onError={handleError}
         javaScriptEnabled
         sharedCookiesEnabled
         thirdPartyCookiesEnabled
+        startInLoadingState={false}
       />
     </View>
   );
