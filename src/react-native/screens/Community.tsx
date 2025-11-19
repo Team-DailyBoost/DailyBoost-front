@@ -46,6 +46,7 @@ interface Comment {
   time: string;
   likes?: number;
   likedBy?: string[];
+  imageUrl?: string | null;
 }
 
 interface CompetitionEntry {
@@ -327,6 +328,8 @@ export function Community() {
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState('');
+  const [commentImage, setCommentImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [showCommentImageActionSheet, setShowCommentImageActionSheet] = useState(false);
   const [competitionImages, setCompetitionImages] = useState<string[]>([]);
   const [postImages, setPostImages] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [showPostImageActionSheet, setShowPostImageActionSheet] = useState(false);
@@ -343,6 +346,8 @@ export function Community() {
   const [filteredPosts, setFilteredPosts] = useState<Post[]>([]);
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<string>('전체');
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
 
   const filteredByCategory = useMemo(
     () =>
@@ -486,8 +491,12 @@ export function Community() {
 
   const loadComments = async (postId: string) => {
     try {
-      // 방법 1: 게시글 상세 조회로 댓글까지 함께 가져오기 (권장)
-      // PostResponse에 commentInfos가 포함되어 있어서 authorName도 함께 옴
+      // 댓글 상세 조회로 이미지 URL 포함 정보 가져오기 (CommentResponse에는 imageUrl 있음)
+      // 이 API를 우선 사용하여 이미지 정보를 확보
+      const res = await api.get<Comment[]>(`${API_CONFIG.ENDPOINTS.GET_COMMENTS}/${postId}`);
+      
+      // 게시글 상세 조회로 댓글 기본 정보 가져오기 (authorName 포함)
+      let commentInfosMap: Map<string, any> = new Map();
       const postDetailRes = await api.get<any>(`${API_CONFIG.ENDPOINTS.GET_POST_DETAIL}/${postId}`);
       if (postDetailRes.success && postDetailRes.data) {
         const postData = postDetailRes.data; // PostResponse
@@ -520,34 +529,136 @@ export function Community() {
           setSelectedPost(updatedPost);
         }
         
-        // 댓글 처리
+        // CommentInfo에서 기본 정보 추출 (이미지 URL은 없음)
         if (postData.commentInfos && Array.isArray(postData.commentInfos)) {
-          const transformedComments = postData.commentInfos.map((comment: any) => ({
-            id: String(comment.commentId || Date.now()),
-            postId: postId,
-            author: comment.authorName || '익명',
-            authorId: comment.authorId || String(comment.userId) || 'unknown',
-            content: comment.content || comment.comment,
-            time: formatPostDate(comment.createAt || comment.createdAt || new Date()),
-            likes: comment.likeCount || 0,
-          }));
-          setComments(transformedComments);
-          return;
+          postData.commentInfos.forEach((comment: any) => {
+            const commentId = String(comment.commentId || Date.now());
+            commentInfosMap.set(commentId, {
+              author: comment.authorName || '익명',
+              authorId: comment.authorId || String(comment.userId) || 'unknown',
+              content: comment.content || comment.comment,
+              time: formatPostDate(comment.createAt || comment.createdAt || new Date()),
+              likes: comment.likeCount || 0,
+            });
+          });
         }
       }
       
-      // 방법 2: 댓글만 따로 조회 (fallback - CommentResponse에는 authorName 없음)
-      const res = await api.get<Comment[]>(`${API_CONFIG.ENDPOINTS.GET_COMMENTS}/${postId}`);
       if (res.success && Array.isArray(res.data)) {
+        // 디버깅: 백엔드 응답 확인
+        console.log('📦 CommentResponse 데이터:', JSON.stringify(res.data, null, 2));
+        
         // 백엔드 응답 구조 변환: CommentResponse → Comment
-        const transformedComments = res.data.map((comment: any) => ({
-          id: String(comment.commentId || comment.id || Date.now()),
+        // CommentResponse 필드: comment, createAt, likeCount, unLikeCount, imageUrl
+        const transformedComments = res.data.map((comment: any, index: number) => {
+          // CommentResponse의 필드명 확인: comment (내용), imageUrl (이미지 URL)
+          const rawImageUrl = comment.imageUrl || comment.image?.url || comment.image?.imageUrl || null;
+          const commentContent = comment.comment || comment.content || '';
+          
+          console.log(`📝 댓글 ${index}:`, {
+            content: commentContent,
+            imageUrl: rawImageUrl,
+            hasImageUrl: !!rawImageUrl,
+            fullComment: comment
+          });
+          
+          // CommentInfo에서 content로 매핑 시도
+          let matchedCommentInfo: any = null;
+          let matchedCommentId: string | null = null;
+          
+          if (commentInfosMap.size > 0) {
+            // content로 매핑 (정확한 매칭)
+            for (const [id, info] of commentInfosMap.entries()) {
+              if (info.content === commentContent || info.content?.trim() === commentContent?.trim()) {
+                matchedCommentInfo = info;
+                matchedCommentId = id;
+                break;
+              }
+            }
+            // 매핑 실패 시 index로 매핑 (순서 기반)
+            if (!matchedCommentInfo && index < commentInfosMap.size) {
+              const infoArray = Array.from(commentInfosMap.entries());
+              const [id, info] = infoArray[index];
+              matchedCommentInfo = info;
+              matchedCommentId = id;
+            }
+          }
+          
+          // 이미지 URL 처리 - rawImageUrl이 있으면 반드시 resolveImageUrl 적용
+          const resolvedImageUrl = rawImageUrl ? resolveImageUrl(rawImageUrl) : null;
+          console.log(`🖼️ 이미지 URL 처리 [${index}]:`, {
+            raw: rawImageUrl,
+            resolved: resolvedImageUrl,
+            willShow: !!resolvedImageUrl
+          });
+          
+          const finalComment = {
+            id: matchedCommentId || String(comment.commentId || comment.id || `temp_${Date.now()}_${index}`),
+            postId: postId,
+            author: matchedCommentInfo?.author || comment.authorName || '익명',
+            authorId: matchedCommentInfo?.authorId || String(comment.authorId || comment.userId || 'unknown'),
+            content: matchedCommentInfo?.content || commentContent,
+            time: matchedCommentInfo?.time || formatPostDate(comment.createAt || comment.createdAt || new Date()),
+            likes: matchedCommentInfo?.likes || comment.likeCount || 0,
+            imageUrl: resolvedImageUrl, // 이미지 URL 저장
+          };
+          
+          console.log(`✅ 최종 댓글 [${index}]:`, {
+            id: finalComment.id,
+            content: finalComment.content.substring(0, 20) + '...',
+            hasImage: !!finalComment.imageUrl,
+            imageUrl: finalComment.imageUrl
+          });
+          
+          return finalComment;
+        });
+        
+        // CommentInfo가 있지만 CommentResponse에 없는 경우 추가 (이미지 없는 댓글)
+        // content로 매핑하여 중복 제거
+        if (commentInfosMap.size > 0) {
+          const usedContents = new Set(transformedComments.map(c => c.content?.trim()));
+          
+          commentInfosMap.forEach((info, commentId) => {
+            // 이미 매핑된 content가 아니면 추가 (이미지 없는 댓글)
+            if (!usedContents.has(info.content?.trim())) {
+              transformedComments.push({
+                id: commentId,
+                postId: postId,
+                ...info,
+                imageUrl: null, // CommentInfo에는 이미지가 없음
+              });
+              usedContents.add(info.content?.trim());
+            }
+          });
+        }
+        
+        // ID 중복 제거 (같은 ID를 가진 댓글이 있으면 최신 것만 유지)
+        const uniqueComments = new Map<string, Comment>();
+        transformedComments.forEach(comment => {
+          const existing = uniqueComments.get(comment.id);
+          // 이미지가 있는 댓글이 우선순위가 높음
+          if (!existing || (comment.imageUrl && !existing.imageUrl)) {
+            uniqueComments.set(comment.id, comment);
+          }
+        });
+        
+        const finalComments = Array.from(uniqueComments.values());
+        
+        console.log('🎯 최종 댓글 목록:', finalComments.map(c => ({
+          id: c.id,
+          content: c.content.substring(0, 20) + '...',
+          hasImage: !!c.imageUrl,
+          imageUrl: c.imageUrl
+        })));
+        
+        setComments(finalComments);
+      } else if (commentInfosMap.size > 0) {
+        // CommentResponse 조회 실패 시 CommentInfo만 사용
+        const transformedComments = Array.from(commentInfosMap.entries()).map(([commentId, info]) => ({
+          id: commentId,
           postId: postId,
-          author: comment.authorName || '익명',
-          authorId: String(comment.authorId || comment.userId || 'unknown'),
-          content: comment.comment || comment.content,
-          time: formatPostDate(comment.createAt || comment.createdAt || new Date()),
-          likes: comment.likeCount || 0,
+          ...info,
+          imageUrl: null, // CommentInfo에는 이미지가 없음
         }));
         setComments(transformedComments);
       } else {
@@ -566,6 +677,7 @@ export function Community() {
         }
       }
     } catch (error) {
+      console.warn('댓글 로드 실패:', error);
       // 로컬 저장소에서 댓글 가져오기
       const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
       if (savedComments) {
@@ -573,7 +685,7 @@ export function Community() {
         setComments(
           parsed.map(comment => ({
             ...comment,
-          time: formatPostDate(comment.time) || String(comment.time || ''),
+            time: formatPostDate(comment.time) || String(comment.time || ''),
           }))
         );
       } else {
@@ -590,10 +702,34 @@ export function Community() {
 
     // 백엔드에 댓글 추가 (postId는 Long 타입이므로 number로 변환)
     try {
-      const res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, {
-        postId: Number(selectedPost.id),
-        content: newComment.trim(),
-      });
+      let res;
+      
+      // 이미지가 있으면 FormData로 전송
+      if (commentImage) {
+        const formData = new FormData();
+        formData.append('commentRequest', JSON.stringify({
+          postId: Number(selectedPost.id),
+          content: newComment.trim(),
+        }));
+        
+        formData.append('file', {
+          uri: commentImage.uri,
+          name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
+          type: commentImage.mimeType || 'image/jpeg',
+        } as any);
+        
+        res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+      } else {
+        // 이미지가 없으면 기존 방식대로 전송
+        res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, {
+          postId: Number(selectedPost.id),
+          content: newComment.trim(),
+        });
+      }
 
       if (res.success) {
         // 백엔드 성공 시 댓글 목록 새로고침
@@ -649,6 +785,7 @@ export function Community() {
         }
         
         setNewComment('');
+        setCommentImage(null);
         Alert.alert('완료', '댓글이 작성되었습니다.');
       } else {
         const errorMsg = res.error || '댓글 작성에 실패했습니다.';
@@ -959,6 +1096,55 @@ export function Community() {
 
   const removePostImage = useCallback((index: number) => {
     setPostImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const pickCommentImageFromLibrary = useCallback(async () => {
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '사진 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setCommentImage(result.assets[0]);
+      }
+    } catch (error) {
+      console.error('갤러리 열기 실패:', error);
+      Alert.alert('알림', '갤러리를 여는 중 문제가 발생했습니다.');
+    }
+  }, []);
+
+  const pickCommentImageFromCamera = useCallback(async () => {
+    try {
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '카메라 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setCommentImage(result.assets[0]);
+      }
+    } catch (error) {
+      console.error('카메라 실행 실패:', error);
+      Alert.alert('알림', '카메라를 여는 중 문제가 발생했습니다.');
+    }
+  }, []);
+
+  const removeCommentImage = useCallback(() => {
+    setCommentImage(null);
   }, []);
 
   const resetNewPostForm = useCallback(() => {
@@ -1417,6 +1603,44 @@ export function Community() {
         </View>
       </Modal>
 
+      {/* Comment Image Action Sheet */}
+      <Modal
+        visible={showCommentImageActionSheet}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCommentImageActionSheet(false)}
+      >
+        <View style={styles.actionSheetOverlay}>
+          <View style={styles.actionSheetContainer}>
+            <Text style={styles.actionSheetTitle}>댓글 사진 업로드</Text>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowCommentImageActionSheet(false);
+                pickCommentImageFromCamera();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>📷 카메라로 촬영</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowCommentImageActionSheet(false);
+                pickCommentImageFromLibrary();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>🖼 갤러리에서 선택</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionSheetButton, styles.actionSheetCancelButton]}
+              onPress={() => setShowCommentImageActionSheet(false)}
+            >
+              <Text style={[styles.actionSheetButtonText, styles.actionSheetCancelButtonText]}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Write Post Modal */}
       <Modal
         visible={showWriteModal}
@@ -1593,6 +1817,7 @@ export function Community() {
           setShowPostDetailModal(false);
           setSelectedPost(null);
           setNewComment('');
+          setCommentImage(null);
         }}
       >
         <View style={styles.modalOverlay}>
@@ -1638,7 +1863,10 @@ export function Community() {
                   </View>
                 </View>
 
-                <ScrollView style={styles.postDetailScroll}>
+                <ScrollView 
+                  style={styles.postDetailScroll}
+                  contentContainerStyle={styles.postDetailScrollContent}
+                >
                   {/* Post Content */}
                   <Card style={styles.postDetailCard}>
                     <View style={styles.postHeader}>
@@ -1735,6 +1963,28 @@ export function Community() {
                             )}
                           </View>
                           <Text style={styles.commentContent}>{comment.content}</Text>
+                          {comment.imageUrl ? (
+                            <TouchableOpacity
+                              onPress={() => {
+                                setSelectedImageUrl(comment.imageUrl);
+                                setShowImageModal(true);
+                              }}
+                              activeOpacity={0.9}
+                              style={styles.commentImageWrapper}
+                            >
+                              <Image 
+                                source={{ uri: comment.imageUrl }} 
+                                style={styles.commentImage}
+                                resizeMode="cover"
+                                onError={(error) => {
+                                  console.warn('❌ 댓글 이미지 로드 실패:', error, comment.imageUrl);
+                                }}
+                                onLoad={() => {
+                                  console.log('✅ 댓글 이미지 로드 성공:', comment.imageUrl);
+                                }}
+                              />
+                            </TouchableOpacity>
+                          ) : null}
                         </View>
                       ))
                     )}
@@ -1743,23 +1993,46 @@ export function Community() {
 
                 {/* Comment Input */}
                 <View style={styles.commentInputContainer}>
-                  <TextInput
-                    style={styles.commentInput}
-                    placeholder="댓글을 입력하세요..."
-                    value={newComment}
-                    onChangeText={setNewComment}
-                    multiline
-                  />
-                  <TouchableOpacity
-                    style={[
-                      styles.commentSendButton,
-                      !newComment.trim() && styles.commentSendButtonDisabled,
-                    ]}
-                    onPress={handleAddComment}
-                    disabled={!newComment.trim()}
-                  >
-                    <Text style={styles.commentSendButtonText}>전송</Text>
-                  </TouchableOpacity>
+                  {commentImage && (
+                    <View style={styles.commentImagePreview}>
+                      <Image 
+                        source={{ uri: commentImage.uri }} 
+                        style={styles.commentImagePreviewImage}
+                        resizeMode="cover"
+                      />
+                      <TouchableOpacity
+                        style={styles.commentImageRemoveButton}
+                        onPress={removeCommentImage}
+                      >
+                        <Text style={styles.commentImageRemoveText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  <View style={styles.commentInputRow}>
+                    <TouchableOpacity
+                      style={styles.commentImageButton}
+                      onPress={() => setShowCommentImageActionSheet(true)}
+                    >
+                      <Text style={styles.commentImageButtonText}>📷</Text>
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.commentInput}
+                      placeholder="댓글을 입력하세요..."
+                      value={newComment}
+                      onChangeText={setNewComment}
+                      multiline
+                    />
+                    <TouchableOpacity
+                      style={[
+                        styles.commentSendButton,
+                        (!newComment.trim() && !commentImage) && styles.commentSendButtonDisabled,
+                      ]}
+                      onPress={handleAddComment}
+                      disabled={!newComment.trim() && !commentImage}
+                    >
+                      <Text style={styles.commentSendButtonText}>전송</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </>
             )}
@@ -1895,6 +2168,47 @@ export function Community() {
               />
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Image Zoom Modal */}
+      <Modal
+        visible={showImageModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowImageModal(false);
+          setSelectedImageUrl(null);
+        }}
+      >
+        <View style={styles.imageModalOverlay}>
+          <TouchableOpacity
+            style={styles.imageModalCloseArea}
+            activeOpacity={1}
+            onPress={() => {
+              setShowImageModal(false);
+              setSelectedImageUrl(null);
+            }}
+          >
+            <View style={styles.imageModalContainer}>
+              <TouchableOpacity
+                style={styles.imageModalCloseButton}
+                onPress={() => {
+                  setShowImageModal(false);
+                  setSelectedImageUrl(null);
+                }}
+              >
+                <Text style={styles.imageModalCloseButtonText}>✕</Text>
+              </TouchableOpacity>
+              {selectedImageUrl && (
+                <Image
+                  source={{ uri: selectedImageUrl }}
+                  style={styles.imageModalImage}
+                  resizeMode="contain"
+                />
+              )}
+            </View>
+          </TouchableOpacity>
         </View>
       </Modal>
 
@@ -2386,6 +2700,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     paddingTop: 50,
+    flex: 1,
   },
   postDetailHeader: {
     flexDirection: 'row',
@@ -2408,6 +2723,9 @@ const styles = StyleSheet.create({
   postDetailScroll: {
     flex: 1,
     padding: 16,
+  },
+  postDetailScrollContent: {
+    paddingBottom: 100, // 댓글 입력창 높이 + 여유 공간
   },
   postDetailCard: {
     marginBottom: 16,
@@ -2476,13 +2794,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   commentInputContainer: {
-    flexDirection: 'row',
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
     backgroundColor: '#fff',
-    alignItems: 'flex-end',
-    gap: 8,
   },
   commentInput: {
     flex: 1,
@@ -2673,5 +2988,97 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  commentImageWrapper: {
+    width: '100%',
+    marginTop: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  commentImage: {
+    width: '100%',
+    height: 240,
+    borderRadius: 12,
+    backgroundColor: '#f0f0f0',
+  },
+  commentImagePreview: {
+    position: 'relative',
+    marginBottom: 8,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  commentImagePreviewImage: {
+    width: '100%',
+    height: 150,
+    borderRadius: 8,
+  },
+  commentImageRemoveButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  commentImageRemoveText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  commentImageButton: {
+    padding: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  commentImageButtonText: {
+    fontSize: 24,
+  },
+  imageModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalCloseArea: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalContainer: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  imageModalCloseButton: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageModalCloseButtonText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  imageModalImage: {
+    width: '100%',
+    height: '100%',
   },
 });

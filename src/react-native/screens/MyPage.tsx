@@ -100,7 +100,15 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       // Try backend profile
       const profile = await UserService.getProfile();
       if (profile) {
-        resolvedUser = { ...resolvedUser, ...profile };
+        // 백엔드 프로필과 병합하되, 로컬의 나이/성별/헬스 정보는 보존
+        resolvedUser = { 
+          ...resolvedUser, 
+          ...profile,
+          // 로컬에 저장된 나이, 성별, 헬스 정보는 유지 (백엔드에 없을 수 있음)
+          age: resolvedUser?.age || profile?.age,
+          gender: resolvedUser?.gender || profile?.gender,
+          healthInfo: resolvedUser?.healthInfo || profile?.healthInfo,
+        };
         await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
       }
       setCurrentUser(resolvedUser);

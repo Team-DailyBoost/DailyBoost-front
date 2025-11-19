@@ -83,6 +83,8 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   const [webViewUrl, setWebViewUrl] = useState('');
   const [webViewLoading, setWebViewLoading] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
+  const [healthAge, setHealthAge] = useState('');
+  const [healthGender, setHealthGender] = useState<'MALE' | 'FEMALE' | 'OTHER'>('MALE');
   const [healthHeight, setHealthHeight] = useState('');
   const [healthWeight, setHealthWeight] = useState('');
   const [healthGoal, setHealthGoal] = useState<GoalType>('GENERAL_HEALTH_MAINTENANCE');
@@ -322,8 +324,14 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   );
 
   const handleHealthSubmit = async () => {
+    const ageValue = healthAge.trim();
     const heightValue = Number(healthHeight);
     const weightValue = Number(healthWeight);
+
+    if (!ageValue) {
+      Alert.alert('입력 오류', '나이를 입력해주세요.');
+      return;
+    }
 
     if (Number.isNaN(heightValue) || heightValue <= 0) {
       Alert.alert('입력 오류', '키를 올바르게 입력해주세요.');
@@ -337,7 +345,9 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
 
     try {
       setSubmittingHealth(true);
-      const result = await UserService.initUserInfo({
+      
+      // 1. 헬스 정보 초기 등록 (initInfo)
+      const initResult = await UserService.initUserInfo({
         healthInfo: {
           height: heightValue,
           weight: weightValue,
@@ -345,10 +355,26 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         },
       });
 
-      if (!result.success) {
-        Alert.alert('등록 실패', result.error || '헬스 정보 등록에 실패했습니다.');
+      if (!initResult.success) {
+        Alert.alert('등록 실패', initResult.error || '헬스 정보 등록에 실패했습니다.');
         setSubmittingHealth(false);
         return;
+      }
+
+      // 2. 나이와 성별 정보 업데이트 (update)
+      const updateResult = await UserService.updateProfile({
+        age: ageValue,
+        gender: healthGender,
+        healthInfo: {
+          height: heightValue,
+          weight: weightValue,
+          goal: healthGoal,
+        },
+      });
+
+      if (!updateResult.success) {
+        console.warn('나이/성별 업데이트 실패:', updateResult.error);
+        // initInfo는 성공했으므로 계속 진행
       }
 
       try {
@@ -365,6 +391,8 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           const parsed = JSON.parse(currentUserRaw);
           const updatedUser = {
             ...parsed,
+            age: ageValue,
+            gender: healthGender,
             healthInfo: {
               height: heightValue,
               weight: weightValue,
@@ -694,8 +722,77 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           <View style={styles.healthModalContainer}>
             <Text style={styles.healthModalTitle}>헬스 정보 입력</Text>
             <Text style={styles.healthModalSubtitle}>
-              식단 추천을 위해 키, 몸무게, 목표를 입력해주세요.
+              식단 추천을 위해 나이, 성별, 키, 몸무게, 목표를 입력해주세요.
             </Text>
+
+            <Text style={styles.healthLabel}>나이</Text>
+            <TextInput
+              style={styles.healthInput}
+              placeholder="예: 25"
+              keyboardType="numeric"
+              value={healthAge}
+              onChangeText={setHealthAge}
+              editable={!submittingHealth}
+              maxLength={3}
+            />
+
+            <Text style={styles.healthLabel}>성별</Text>
+            <View style={styles.genderContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.genderButton,
+                  healthGender === 'MALE' && styles.genderButtonSelected,
+                ]}
+                onPress={() => setHealthGender('MALE')}
+                disabled={submittingHealth}
+              >
+                <Text
+                  style={
+                    healthGender === 'MALE'
+                      ? styles.genderButtonTextSelected
+                      : styles.genderButtonText
+                  }
+                >
+                  남성
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.genderButton,
+                  healthGender === 'FEMALE' && styles.genderButtonSelected,
+                ]}
+                onPress={() => setHealthGender('FEMALE')}
+                disabled={submittingHealth}
+              >
+                <Text
+                  style={
+                    healthGender === 'FEMALE'
+                      ? styles.genderButtonTextSelected
+                      : styles.genderButtonText
+                  }
+                >
+                  여성
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.genderButton,
+                  healthGender === 'OTHER' && styles.genderButtonSelected,
+                ]}
+                onPress={() => setHealthGender('OTHER')}
+                disabled={submittingHealth}
+              >
+                <Text
+                  style={
+                    healthGender === 'OTHER'
+                      ? styles.genderButtonTextSelected
+                      : styles.genderButtonText
+                  }
+                >
+                  기타
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             <Text style={styles.healthLabel}>키 (cm)</Text>
             <TextInput
@@ -904,6 +1001,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     height: 44,
     fontSize: 15,
+  },
+  genderContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 4,
+  },
+  genderButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  genderButtonSelected: {
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+  },
+  genderButtonText: {
+    fontSize: 14,
+    color: '#4b5563',
+    fontWeight: '500',
+  },
+  genderButtonTextSelected: {
+    fontSize: 14,
+    color: '#fff',
+    fontWeight: '600',
   },
   goalContainer: {
     flexDirection: 'row',
