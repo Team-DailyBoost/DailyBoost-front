@@ -58,27 +58,28 @@ export async function requestWithWebViewFallback<T = any>(
 
   const url = BASE_URL + path + qs;
 
-  // 인증 헤더 준비 (JWT 토큰 또는 세션 쿠키)
+  // 인증 헤더 준비 (JWT 토큰 우선, 세션 쿠키는 보조)
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     'Accept': 'application/json',
     ...(options.headers || {}),
   };
 
-  // JWT 토큰 확인 (우선)
-  let token = await AsyncStorage.getItem('@accessToken');
-  if (!token) {
-    const authToken = await AsyncStorage.getItem('authToken');
-    if (authToken) token = authToken.replace(/^Bearer\s+/, '');
+  // Content-Type은 body가 있을 때만 설정 (FormData는 자동으로 boundary 포함)
+  // Spring Boot가 @RequestBody를 받으려면 Content-Type이 application/json이어야 함
+  if (options.body && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json;charset=utf-8';
   }
+
+  // JWT 토큰 확인 (우선) - getAccessToken 사용하여 통일된 로직 적용
+  const { getAccessToken, getSessionCookie } = await import('../utils/storage');
+  const token = await getAccessToken();
+  
   if (token) {
+    // accessToken에 'Bearer '가 포함되어 있으면 그대로, 아니면 추가
     headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
   } else {
-    let cookie = (await AsyncStorage.getItem('@sessionCookie')) || '';
-    if (!cookie) {
-      const jsessOnly = await AsyncStorage.getItem('backend:session-cookie');
-      if (jsessOnly) cookie = `JSESSIONID=${jsessOnly}`;
-    }
+    // 세션 쿠키 확인 (보조 수단) - getSessionCookie 사용하여 통일된 로직 적용
+    const cookie = await getSessionCookie();
     if (cookie) {
       let cookieValue = cookie.includes(';') ? cookie.split(';')[0] : cookie;
       if (!cookieValue.includes('JSESSIONID=')) {
@@ -88,15 +89,13 @@ export async function requestWithWebViewFallback<T = any>(
     }
   }
 
+  // 토큰이 없어도 요청은 시도 (백엔드에서 401 반환할 수 있음)
+  // 경고 로그는 제거 (토큰이 있을 때는 경고 불필요)
+
   const hasBody = typeof options.body !== 'undefined' && options.body !== null;
   const requiresWebViewFirst = method === 'GET' && hasBody;
 
   const callViaWebView = async (reason?: string): Promise<T> => {
-    if (reason) {
-      console.log('⚠️ RN 직접 호출 건너뛰고 WebView 폴백 시도:', path, '-', reason);
-    } else {
-      console.log('⚠️ RN 요청이 HTML 로그인 페이지 반환 → WebView로 폴백 시도:', path);
-    }
 
     if (!WebViewManager.isAvailable()) {
       throw new Error('로그인은 되었지만 현재 WebView 프록시가 없습니다. 로그인 화면(WebView)이 떠 있는 상태에서 다시 시도해주세요.');
@@ -109,35 +108,75 @@ export async function requestWithWebViewFallback<T = any>(
         path.indexOf('/api/food/recipe/recommend') === 0 ||
         path.indexOf('/api/exercise/recommend') === 0;
 
+      // 디버깅: 요청 데이터 로깅
+      if (options.body) {
+        console.log('[WebView] GET + body 요청:', {
+          method,
+          path,
+          body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body),
+          hasAuth: !!headers['Authorization'],
+          contentType: headers['Content-Type'] || 'application/json;charset=utf-8',
+        });
+      }
+      
       const viaWebView = await WebViewManager.requestApi({
         method,
         path,
         headers,
         query: options.query || {},
         body: options.body ?? null,
-        timeoutMs: isHeavy ? 8000 : undefined,
       });
 
-      console.log('✅ WebView 폴백 성공:', path);
-
-      if (viaWebView && typeof viaWebView === 'object' && 'error' in viaWebView) {
-        throw new Error(viaWebView.message || 'WebView 프록시 호출에 실패했습니다.');
+      // WebView 응답이 에러인 경우 처리
+      if (viaWebView && typeof viaWebView === 'object') {
+        // status >= 400 또는 error: true인 경우
+        if (viaWebView.error === true || (viaWebView.status && viaWebView.status >= 400)) {
+          // 에러 응답 상세 로깅
+          console.log('[WebView] GET + body 에러 응답:', {
+            status: viaWebView.status,
+            path,
+            error: viaWebView.error,
+            message: viaWebView.message,
+            description: viaWebView.description,
+            errorCode: viaWebView.errorCode,
+            fullResponse: viaWebView,
+          });
+          
+          const errorMessage = viaWebView.message || viaWebView.error || viaWebView.description || '요청에 실패했습니다.';
+          const status = viaWebView.status || 500;
+          throw new Error(`${status} ${errorMessage}`);
+        }
       }
 
       if (typeof viaWebView === 'string') {
         try {
           const parsed = JSON.parse(viaWebView);
+          if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+            throw new Error(parsed.message || parsed.error || '요청에 실패했습니다.');
+          }
           if (parsed && typeof parsed === 'object' && 'value' in parsed) {
             return parsed.value as T;
           }
           return parsed as T;
-        } catch {
+        } catch (parseError) {
+          // JSON 파싱 실패 시 문자열 그대로 반환
           return viaWebView as T;
         }
       }
 
-      if (viaWebView && typeof viaWebView === 'object' && 'value' in viaWebView) {
-        return (viaWebView as ApiResponse<T>).value;
+      // 객체인 경우 value 추출
+      if (viaWebView && typeof viaWebView === 'object') {
+        if ('value' in viaWebView) {
+          return (viaWebView as ApiResponse<T>).value;
+        }
+        // data 필드가 있으면 data 반환
+        if ('data' in viaWebView) {
+          return viaWebView.data as T;
+        }
+        // status가 200-399이고 error가 없으면 그대로 반환
+        if (viaWebView.status && viaWebView.status >= 200 && viaWebView.status < 400 && !viaWebView.error) {
+          return viaWebView as T;
+        }
       }
 
       return viaWebView as T;
@@ -167,8 +206,21 @@ export async function requestWithWebViewFallback<T = any>(
     }
 
     if (!res.ok) {
-      const snippet = String(text || '').substring(0, 200);
-      throw new Error(`${res.status} ${snippet}`);
+      // 500 에러나 404 에러는 상세 정보 포함
+      let errorMessage = `${res.status}`;
+      try {
+        const errorData = JSON.parse(text);
+        if (errorData?.error || errorData?.description || errorData?.message) {
+          errorMessage += ` ${errorData.error || errorData.description || errorData.message}`;
+        }
+        if (errorData?.errorCode) {
+          errorMessage += ` (errorCode:${errorData.errorCode})`;
+        }
+      } catch {
+        const snippet = String(text || '').substring(0, 200);
+        errorMessage += ` ${snippet}`;
+      }
+      throw new Error(errorMessage);
     }
 
     try {
@@ -181,11 +233,25 @@ export async function requestWithWebViewFallback<T = any>(
       return text as T;
     }
   } catch (error: any) {
-    console.error('❌ RN 요청 실패:', error);
-
     const message = String(error?.message || error || '').toLowerCase();
+    
+    // GET + body 조합은 WebView로 처리
     if (hasBody && method === 'GET' && message.includes('body not allowed')) {
       return callViaWebView('RN fetch가 GET+body 조합을 차단합니다.');
+    }
+
+    // 네트워크 오류나 타임아웃은 WebView로 재시도
+    if (
+      message.includes('network') ||
+      message.includes('timeout') ||
+      message.includes('fetch') ||
+      message.includes('network request failed')
+    ) {
+      try {
+        return await callViaWebView('네트워크 오류로 WebView로 재시도합니다.');
+      } catch (webViewError) {
+        throw error; // WebView도 실패하면 원래 에러 throw
+      }
     }
 
     throw error;

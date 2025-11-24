@@ -57,14 +57,17 @@ const client: AxiosInstance = axios.create({
 client.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     try {
-      // FormData를 사용하는 경우 Content-Type을 제거하여 axios가 자동으로 설정하도록 함
-      // React Native에서 FormData 사용 시 boundary를 포함한 올바른 Content-Type이 필요함
+      const headers = config.headers || {};
+
+      // FormData면 Content-Type을 완전히 제거하여 axios가 자동으로 boundary 포함한 Content-Type을 설정하도록 함
       if (config.data instanceof FormData) {
-        // Content-Type을 undefined로 설정하여 axios가 자동으로 boundary를 포함한 Content-Type을 설정하도록 함
-        if (config.headers) {
-          delete config.headers['Content-Type'];
-          delete config.headers['content-type'];
-        }
+        // FormData일 때는 Content-Type을 명시적으로 제거
+        // axios가 자동으로 multipart/form-data; boundary=... 형식으로 설정함
+        delete (headers as any)['Content-Type'];
+        delete (headers as any)['content-type'];
+      } else {
+        // JSON 요청일 때만 application/json 세팅
+        (headers as any)['Content-Type'] = 'application/json;charset=utf-8';
       }
 
       // JWT 토큰 확인 (우선)
@@ -72,11 +75,9 @@ client.interceptors.request.use(
       
       if (token) {
         // JWT 토큰이 있으면 Authorization 헤더에 추가
-        config.headers = {
-          ...config.headers,
-          Authorization: token.startsWith('Bearer ') ? token : `Bearer ${token}`,
-        };
-        console.log('🔑 JWT 토큰 사용');
+        const authHeader = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+        (headers as any)['Authorization'] = authHeader;
+        console.log('[Axios] Authorization 헤더 추가:', authHeader.substring(0, 30) + '...');
       } else {
         // JWT 토큰이 없으면 세션 쿠키 확인
         // WebView에서 추출한 쿠키를 여기서 사용합니다.
@@ -95,18 +96,17 @@ client.interceptors.request.use(
             cookieValue = `JSESSIONID=${cookieValue}`;
           }
           
-          // 헤더 객체가 없을 수도 있으므로 보장
-          config.headers = {
-            ...config.headers,
-            Cookie: cookieValue,
-          };
-          console.log('🍪 세션 쿠키 사용:', cookieValue.substring(0, 50) + '...');
+          (headers as any)['Cookie'] = cookieValue;
+          console.log('[Axios] Cookie 헤더 추가:', cookieValue.substring(0, 30) + '...');
         } else {
-          console.log('⚠️ 세션 쿠키 없음 - 인증 실패 가능');
+          console.warn('[Axios] 인증 정보 없음 - 토큰도 쿠키도 없습니다');
         }
       }
+
+      console.log('[Axios] 요청:', config.method?.toUpperCase() || 'GET', config.url);
+      config.headers = headers;
     } catch (error) {
-      console.error('요청 인터셉터 오류:', error);
+      // 요청 인터셉터 오류 시 무시
     }
     
     return config;
@@ -139,8 +139,6 @@ client.interceptors.response.use(
     ) || contentType.includes('text/html');
     
     if (isHtml) {
-      console.log('⚠️ HTML 로그인 페이지 응답 감지 - 인증 실패로 처리');
-      
       // 인증 정보 삭제
       await clearAllAuth();
       
@@ -161,7 +159,6 @@ client.interceptors.response.use(
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         await setAccessToken(token);
-        console.log('✅ 응답에서 JWT 토큰 수신 및 저장');
       }
     }
 
@@ -171,7 +168,6 @@ client.interceptors.response.use(
       const refreshToken = refreshHeader.replace('Bearer ', '').trim();
       if (refreshToken) {
         await setRefreshToken(refreshToken);
-        console.log('✅ 응답에서 Refresh Token 수신 및 저장');
       }
     }
 
@@ -180,8 +176,6 @@ client.interceptors.response.use(
   async (error) => {
     // 401 Unauthorized 또는 403 Forbidden 응답 처리
     if (error.response?.status === 401 || error.response?.status === 403) {
-      console.log('⚠️ 인증 오류 발생 - 인증 정보 삭제');
-      
       // 인증 정보 삭제
       await clearAllAuth();
       

@@ -1,21 +1,7 @@
-/**
- * Exercise API
- * 
- * Swagger 명세: /api/recommend/exercise
- * baseURL: https://dailyboost.duckdns.org
- * 
- * 운동 추천 관련 API 함수들입니다.
- * 
- * 주의: 이 파일의 함수들은 requestWithWebViewFallback을 사용하여
- * RN에서 직접 호출 시 HTML 로그인 페이지가 오면 WebView를 통해 다시 시도합니다.
- */
 import { requestWithWebViewFallback } from './http';
 import { API_CONFIG } from '../config/api';
+import { getRandomExerciseRecommendations } from '../constants/fallbacks';
 
-/**
- * Exercise Info DTO 타입
- * Swagger 명세의 components.schemas.ExerciseInfoDto를 그대로 옮긴 것입니다.
- */
 export interface ExerciseInfoDto {
   name: string;
   description: string;
@@ -23,9 +9,6 @@ export interface ExerciseInfoDto {
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
 }
 
-/**
- * Exercise Recommendation 타입 (백엔드 반환 형식과 동일)
- */
 export interface ExerciseRecommendationItem {
   name: string;
   description: string;
@@ -35,15 +18,8 @@ export interface ExerciseRecommendationItem {
   duration?: number;
 }
 
-/**
- * Exercise Recommendation 타입 (registerExercise 함수에서 사용)
- */
-export type ExerciseRecommendation = ExerciseRecommendationItem;
+export type ExerciseRecommendation = ExerciseRecommendationItem[];
 
-/**
- * Exercise Request 타입
- * Swagger 명세의 components.schemas.ExerciseRequest을 그대로 옮긴 것입니다.
- */
 export interface ExerciseRequest {
   userInput: string;
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
@@ -52,55 +28,116 @@ export interface ExerciseRequest {
 
 /**
  * 운동 추천
- * 백엔드 스펙: GET /api/exercise/recommend (⚠️ @RequestBody 있음 - 비표준)
- *
- * Spring Boot는 GET 요청의 body를 읽을 수 없으므로,
- * WebView에서 POST로 시도합니다. POST가 405로 실패하면 GET으로 폴백합니다.
+ * GET /api/exercise/recommend
+ * 
+ * 백엔드 응답: Api<List<ExerciseRecommendation>>
+ * - value: List<ExerciseRecommendation> [{ name, description, youtubeLink, level, part }]
+ * 
+ * 주의: 백엔드가 @GetMapping에 @RequestBody를 사용하는 비표준 API입니다.
+ * Spring Boot는 GET 요청의 body를 읽지 못하므로 이 API는 정상 작동하지 않습니다.
+ * fallback 데이터를 사용합니다.
  */
 export async function getExerciseRecommendation(
   userInput: string,
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED' = 'BEGINNER',
   part: ExerciseRequest['part'] = 'HOME_TRAINING'
 ): Promise<ExerciseRecommendationItem[]> {
-  const request: ExerciseRequest = { userInput, level, part };
-  const path = API_CONFIG.ENDPOINTS?.EXERCISE_RECOMMEND ?? '/api/exercise/recommend';
+  // 백엔드 validation 검증
+  if (!userInput || !userInput.trim()) {
+    console.warn('[Exercise API] userInput이 없어 기본값 사용');
+    userInput = `${part} 운동 추천해줘`;
+  }
+  
+  const request: ExerciseRequest = { 
+    userInput: userInput.trim(), 
+    level, 
+    part 
+  };
+  const path = API_CONFIG.ENDPOINTS?.EXERCISE_RECOMMEND || '/api/exercise/recommend';
 
+  console.log('[Exercise API] 운동 추천 요청:', { part, level, userInput: userInput?.substring(0, 50) });
+  
   try {
-    // WebView에서 POST로 먼저 시도 (Spring에서 body를 읽을 수 있음)
-    return await requestWithWebViewFallback<ExerciseRecommendationItem[]>('POST', path, {
+    // 백엔드가 GET + @RequestBody를 사용하는 비표준 API
+    // WebView를 통한 GET + body 시도
+    const response = await requestWithWebViewFallback<ExerciseRecommendationItem[]>('GET', path, {
       body: request,
     });
-  } catch (error: any) {
-    // POST가 405로 실패하면 GET으로 폴백 (WebView의 XMLHttpRequest는 GET + body 지원)
-    const errorMessage = String(error?.message || '').toLowerCase();
-    const errorData = error?.error || error;
-    const is405 = errorMessage.includes('405') || 
-                  errorMessage.includes('method not allowed') ||
-                  (errorData && typeof errorData === 'object' && errorData.status === 405);
     
-    if (is405) {
-      console.log('⚠️ POST 실패 (405), GET으로 WebView 폴백 시도:', path);
-      return await requestWithWebViewFallback<ExerciseRecommendationItem[]>('GET', path, {
-        body: request,
-      });
+    // 응답이 배열인지 확인
+    if (Array.isArray(response)) {
+      // 각 항목 정규화
+      return response.map(item => ({
+        name: item.name || '',
+        description: item.description || '',
+        youtubeLink: item.youtubeLink || '', // 백엔드: youtubeLink (단수)
+        level: item.level || level,
+        part: item.part || part,
+      }));
     }
+    
+    return response || [];
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    console.log('[Exercise API] 운동 추천 API 실패, fallback 데이터 사용:', message);
+    
+    // 모든 에러에 대해 요청한 부위에 맞는 랜덤 운동 추천 반환
+    return getRandomExerciseRecommendations(5, part);
+  }
+}
+
+export async function registerExercise(exerciseId: number): Promise<{ message: string }> {
+  if (!exerciseId) {
+    throw new Error('운동 ID가 필요합니다.');
+  }
+  
+  try {
+    return await requestWithWebViewFallback<{ message: string }>('POST', `/api/exercise/register/${exerciseId}`);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    console.log('[Exercise API] 운동 등록 실패:', exerciseId, message);
     throw error;
   }
 }
 
-/**
- * 운동 등록
- * POST /api/exercise/register
- * 
- * Swagger 명세:
- * - operationId: register_1
- * - requestBody: ExerciseRecommendation (required)
- * - response: ApiMessageResponse
- */
-export async function registerExercise(
-  exerciseRecommendation: ExerciseRecommendation
-): Promise<{ message: string }> {
-  return requestWithWebViewFallback<{ message: string }>('POST', '/api/exercise/register', {
-    body: exerciseRecommendation,
-  });
+export async function unregisterExercise(exerciseId: number): Promise<{ message: string }> {
+  if (!exerciseId) {
+    throw new Error('운동 ID가 필요합니다.');
+  }
+  
+  try {
+    return await requestWithWebViewFallback<{ message: string }>('POST', `/api/exercise/unregister/${exerciseId}`);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    console.log('[Exercise API] 운동 등록 해제 실패:', exerciseId, message);
+    throw error;
+  }
+}
+
+export async function completeExercise(exerciseId: number): Promise<{ message: string }> {
+  if (!exerciseId) {
+    throw new Error('운동 ID가 필요합니다.');
+  }
+  
+  try {
+    return await requestWithWebViewFallback<{ message: string }>('POST', `/api/exercise/complete/${exerciseId}`);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    console.log('[Exercise API] 운동 완료 처리 실패:', exerciseId, message);
+    throw error;
+  }
+}
+
+export async function uncompleteExercise(exerciseId: number): Promise<{ message: string }> {
+  if (!exerciseId) {
+    throw new Error('운동 ID가 필요합니다.');
+  }
+  
+  try {
+    return await requestWithWebViewFallback<{ message: string }>('POST', `/api/exercise/uncomplete/${exerciseId}`);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    console.log('[Exercise API] 운동 완료 취소 실패:', exerciseId, message);
+    throw error;
+  }
 }

@@ -1,7 +1,7 @@
 import { api, API_CONFIG } from './api';
 import { WebViewManager } from '../utils/webViewManager';
 import { getFoodRecommendations as fetchFoodRecommendations } from '../api/foods';
-import { FALLBACK_FOOD_RECOMMENDATIONS } from '../constants/fallbacks';
+import { getRandomFoodRecommendations } from '../constants/fallbacks';
 import { ServiceResult } from '../types/service';
 
 /**
@@ -45,6 +45,49 @@ export interface RecipeRequest {
  * Updated to match backend API specification
  */
 export class FoodService {
+  private static buildFallbackFoodLogs(): FoodResponse[] {
+    const now = Date.now();
+    return FALLBACK_FOOD_RECOMMENDATIONS.map((item, index) => ({
+      id: -(index + 1),
+      name: item.name,
+      calory: item.calory,
+      carbohydrate: item.carbohydrate,
+      protein: item.protein,
+      fat: item.fat,
+      foodKind: item.foodKind,
+      description: item.description,
+      // registeredAt 필드는 백엔드에서 사용하지 않음
+    }));
+  }
+
+  private static handleFoodApiError<T>(
+    errorMessage?: string,
+  ): { success: true; data: T; meta?: Record<string, any> } | null {
+    if (!errorMessage) return null;
+    const upper = errorMessage.toUpperCase();
+
+    if (
+      upper.includes('FOOD_NOT_FOUND') ||
+      upper.includes('USER_NOT_FOUND') ||
+      errorMessage.includes('사용자를 찾을 수 없습니다.')
+    ) {
+      return { success: true, data: [] as T };
+    }
+
+    if (upper.includes('INTERNAL SERVER ERROR') || errorMessage.includes('서버 오류')) {
+      return {
+        success: true,
+        data: FoodService.buildFallbackFoodLogs() as unknown as T,
+        meta: {
+          usedFallback: true,
+          reason: errorMessage,
+        },
+      };
+    }
+
+    return null;
+  }
+
   /**
    * 식단 추천 엔드포인트 후보 (백엔드 구현 차이 대응)
    */
@@ -66,20 +109,67 @@ export class FoodService {
    * Note: Requires authentication
    */
   static async getTodayFoodLogs() {
+    // 인증 정보 확인 (함수 시작 시점에 한 번만 확인)
+    const { getAccessToken, getSessionCookie } = await import('../utils/storage');
+    const token = await getAccessToken();
+    const cookie = await getSessionCookie();
+    
+    // 인증 정보가 없으면 API 호출하지 않고 빈 배열 반환
+    if (!token && !cookie) {
+      console.log('[FoodService] 식단 조회: 인증 정보가 없습니다. 로그인이 필요합니다.');
+      return { 
+        success: false, 
+        error: '로그인이 필요합니다.',
+        data: [] 
+      };
+    }
+    
     try {
-      const res = await api.get<FoodResponse[]>(API_CONFIG.ENDPOINTS.FOOD_TODAY);
-      if (res.success) return res;
-      // Fallback via WebView proxy
-      try {
-        const proxy = await WebViewManager.requestApi({ path: API_CONFIG.ENDPOINTS.FOOD_TODAY, method: 'GET', headers: { 'Accept': 'application/json' } });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodResponse[]>(proxy.data);
-          return { success: true, data: normalized } as any;
+      // 개선된 API 함수 사용 (에러 처리 포함)
+      const { getTodayFoods } = await import('../api/foods');
+      const result = await getTodayFoods();
+      
+      // 배열이 아니면 빈 배열 반환
+      const dataArray = Array.isArray(result) ? result : [];
+      return { success: true, data: dataArray };
+    } catch (error: any) {
+      // 네트워크 오류나 기타 예외
+      const status = error?.response?.status;
+      const errorData = error?.response?.data;
+      
+      // 401/403 에러는 인증 문제
+      if (status === 401 || status === 403) {
+        console.log('[FoodService] 식단 조회: 인증이 만료되었습니다. 다시 로그인해주세요.');
+        return { 
+          success: false, 
+          error: '인증이 만료되었습니다. 다시 로그인해주세요.',
+          data: [] 
+        };
+      }
+      
+      // 500 에러는 백엔드 서버 오류 - 빈 배열 반환 (로컬 캐시 사용)
+      if (status === 500) {
+        console.log('[FoodService] 식단 조회: 백엔드 500 오류, 빈 배열 반환 (로컬 캐시 사용)');
+        return {
+          success: true,
+          data: [],
+          meta: {
+            usedFallback: true,
+            reason: 'backend_500',
+          },
+        };
+      }
+
+      // 기타 에러도 빈 배열 반환하여 앱이 계속 작동하도록 함
+      console.log('[FoodService] 식단 조회: 에러 발생, 빈 배열 반환', error?.message || errorData?.error);
+      return { 
+        success: true, 
+        data: [],
+        meta: {
+          usedFallback: true,
+          reason: error?.message || errorData?.error || 'unknown_error',
         }
-      } catch {}
-      return res;
-    } catch (error) {
-      return { success: false, error: '일일 식단 조회 실패' };
+      };
     }
   }
   
@@ -90,18 +180,23 @@ export class FoodService {
    */
   static async getWeeklyFoodLogs() {
     try {
-      const res = await api.get<FoodResponse[]>(API_CONFIG.ENDPOINTS.FOOD_WEEKLY);
-      if (res.success) return res;
-      try {
-        const proxy = await WebViewManager.requestApi({ path: API_CONFIG.ENDPOINTS.FOOD_WEEKLY, method: 'GET', headers: { 'Accept': 'application/json' } });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodResponse[]>(proxy.data);
-          return { success: true, data: normalized } as any;
-        }
-      } catch {}
-      return res;
-    } catch (error) {
-      return { success: false, error: '주간 식단 조회 실패' };
+      // 개선된 API 함수 사용 (에러 처리 포함)
+      const { getWeeklyFoods } = await import('../api/foods');
+      const result = await getWeeklyFoods();
+      
+      // 배열이 아니면 빈 배열 반환
+      const dataArray = Array.isArray(result) ? result : [];
+      return { success: true, data: dataArray };
+    } catch (error: any) {
+      console.log('[FoodService] 주간 식단 조회: 예외 발생, 빈 배열 반환', error?.message);
+      return {
+        success: true,
+        data: [],
+        meta: {
+          usedFallback: true,
+          reason: error?.message || 'exception',
+        },
+      };
     }
   }
   
@@ -116,18 +211,36 @@ export class FoodService {
    */
   static async getFoodRecommendations(): Promise<ServiceResult<FoodRecommendation[]>> {
     try {
-      // 우리가 만든 client.ts 기반 API 사용
-      const result = await fetchFoodRecommendations();
+      // 개선된 API 함수 사용 (에러 처리 포함)
+      const { getFoodRecommendations } = await import('../api/foods');
+      const result = await getFoodRecommendations();
+      
+      // 배열이 아니면 빈 배열 반환 (fallback 사용)
+      if (!Array.isArray(result) || result.length === 0) {
+        return {
+          success: true,
+          data: FALLBACK_FOOD_RECOMMENDATIONS,
+          meta: {
+            usedFallback: true,
+            reason: '식단 추천 결과가 비어있습니다.',
+          },
+        };
+      }
       
       return { 
         success: true, 
         data: result 
       };
     } catch (error: any) {
-      console.error('식단 추천 오류:', error);
+      const message = String(error?.message || '');
       
       // 인증 오류인 경우
-      if (error.response?.status === 401 || error.response?.status === 403) {
+      if (
+        error.response?.status === 401 ||
+        error.response?.status === 403 ||
+        message.includes('401') ||
+        message.includes('403')
+      ) {
         return { 
           success: false, 
           error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.' 
@@ -137,11 +250,11 @@ export class FoodService {
       const reason = typeof error?.message === 'string' && error.message.trim().length > 0
         ? error.message
         : 'AI 식단 추천 서버가 응답하지 않습니다.';
-      console.warn('⚠️ 식단 추천 API 실패 - 기본 추천으로 대체:', reason);
 
+      console.log('[FoodService] 식단 추천 실패, 랜덤 더미 데이터 사용:', reason);
       return {
         success: true,
-        data: FALLBACK_FOOD_RECOMMENDATIONS,
+        data: getRandomFoodRecommendations(3),
         meta: {
           usedFallback: true,
           reason,
@@ -152,61 +265,106 @@ export class FoodService {
 
   /**
    * Get recipe recommendation based on user input
-   * 백엔드: POST /api/food/recipe/recommend
+   * 백엔드: GET /api/food/recipe/recommend (⚠️ @RequestBody 있음 - 비표준)
    * 
    * Note: Requires authentication
+   * 백엔드가 GET 메서드에 @RequestBody를 사용하므로 WebView를 통해 처리합니다.
    */
   static async getRecipeRecommendation(userInput: string): Promise<ServiceResult<FoodRecommendation>> {
     try {
-      const response = await api.post<FoodRecommendation>(
-        API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
-        { userInput } as RecipeRequest
-      );
+      // 백엔드가 GET 메서드에 @RequestBody를 사용하므로 requestWithWebViewFallback 사용
+      const { recommendRecipe } = await import('../api/foods');
+      const result = await recommendRecipe({ userInput });
       
-      if (response.success && response.data) {
+      if (result && typeof result === 'object' && 'name' in result && result.name) {
         return {
           success: true,
-          data: response.data,
+          data: result,
         };
       }
       
-      // Fallback via WebView proxy
-      try {
-        const proxy = await WebViewManager.requestApi({
-          path: API_CONFIG.ENDPOINTS.FOOD_RECIPE_RECOMMEND,
-          method: 'POST',
-          headers: { 'Accept': 'application/json' },
-          body: { userInput },
-        });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodRecommendation>(proxy.data);
-          return { 
-            success: true, 
-            data: normalized 
-          };
-        }
-      } catch (proxyError) {
-        // WebView fallback 실패
-      }
+      // name이 null이거나 없으면 fallback 사용
+      const fallbackRecipe = {
+        name: '훈제 닭가슴살 샐러드',
+        calory: 420,
+        carbohydrate: 30,
+        protein: 38,
+        fat: 12,
+        foodKind: 'RECIPE',
+        description:
+          '훈제 닭가슴살과 다양한 채소(로메인, 방울토마토, 오이, 아보카도)를 곁들여 소금, 후추, 올리브오일, 레몬즙으로 간을 합니다. 곁들여 먹을 요거트 드레싱은 플레인 요거트와 꿀, 머스터드 약간을 섞어 완성합니다.',
+      };
       
       return {
-        success: false,
-        error: response.error || '레시피 추천에 실패했습니다.',
+        success: true,
+        data: fallbackRecipe,
+        meta: {
+          usedFallback: true,
+          reason: '레시피 추천 응답 형식이 올바르지 않습니다.',
+        },
       };
     } catch (error: any) {
-      const errorMessage = error.message || '레시피 추천 중 오류가 발생했습니다.';
+      const message = String(error?.message || '');
+      const errorMessage = message || '레시피 추천 중 오류가 발생했습니다.';
       
       // 인증 오류인 경우
-      if (error.response?.status === 401 || error.response?.status === 403) {
+      if (
+        error.response?.status === 401 ||
+        error.response?.status === 403 ||
+        message.includes('401') ||
+        message.includes('403')
+      ) {
         return {
           success: false,
           error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.',
         };
       }
+
+      // 500, 404 등 서버 에러는 fallback 사용
+      const fallbackRecipe = {
+        name: '훈제 닭가슴살 샐러드',
+        calory: 420,
+        carbohydrate: 30,
+        protein: 38,
+        fat: 12,
+        foodKind: 'RECIPE',
+        description:
+          '훈제 닭가슴살과 다양한 채소(로메인, 방울토마토, 오이, 아보카도)를 곁들여 소금, 후추, 올리브오일, 레몬즙으로 간을 합니다. 곁들여 먹을 요거트 드레싱은 플레인 요거트와 꿀, 머스터드 약간을 섞어 완성합니다.',
+      };
       
+      console.log('[FoodService] 레시피 추천 실패, 랜덤 더미 데이터 사용:', errorMessage);
+      // 랜덤으로 선택된 레시피 하나 반환
+      const randomRecipes = getRandomFoodRecommendations(1, 'DINNER');
+      const randomRecipe = randomRecipes.length > 0 ? randomRecipes[0] : null;
+      
+      if (randomRecipe) {
+        return {
+          success: true,
+          data: {
+            name: randomRecipe.name,
+            calory: String(randomRecipe.calory),
+            carbohydrate: String(randomRecipe.carbohydrate),
+            protein: String(randomRecipe.protein),
+            fat: String(randomRecipe.fat),
+            foodKind: 'RECIPE' as const,
+            description: randomRecipe.description,
+            weight: '300g',
+          },
+          meta: {
+            usedFallback: true,
+            reason: errorMessage,
+          },
+        };
+      }
+      
+      // 랜덤 레시피가 없으면 기본 레시피 사용
       return {
-        success: false,
-        error: errorMessage,
+        success: true,
+        data: fallbackRecipe,
+        meta: {
+          usedFallback: true,
+          reason: errorMessage,
+        },
       };
     }
   }
@@ -217,19 +375,41 @@ export class FoodService {
    * Note: Requires authentication
    */
   static async searchFood(keyword: string) {
+    // keyword가 없거나 빈 문자열이면 빈 배열 반환
+    if (!keyword || typeof keyword !== 'string' || keyword.trim().length === 0) {
+      return { success: true, data: [] };
+    }
+
     try {
-      const res = await api.get<FoodResponse[]>(API_CONFIG.ENDPOINTS.FOOD_SEARCH, { keyword });
-      if (res.success) return res;
-      try {
-        const proxy = await WebViewManager.requestApi({ path: API_CONFIG.ENDPOINTS.FOOD_SEARCH, method: 'GET', headers: { 'Accept': 'application/json' }, query: { keyword } });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          const normalized = FoodService.normalizeValue<FoodResponse[]>(proxy.data);
-          return { success: true, data: normalized } as any;
-        }
-      } catch {}
-      return res;
-    } catch (error) {
-      return { success: false, error: '음식 검색 실패' };
+      // api.get의 params 형식으로 올바르게 전달
+      const res = await api.get<FoodResponse[]>(API_CONFIG.ENDPOINTS.FOOD_SEARCH, { 
+        params: { keyword: keyword.trim() } 
+      });
+      if (res.success && res.data) {
+        const dataArray = Array.isArray(res.data) ? res.data : [];
+        return { success: true, data: dataArray };
+      }
+
+      // 400 Bad Request나 기타 에러는 빈 배열 반환 (검색 결과 없음으로 처리)
+      console.log('[FoodService] 음식 검색: 에러 발생, 빈 배열 반환', res.error);
+      return {
+        success: true,
+        data: [],
+        meta: {
+          usedFallback: true,
+          reason: res.error || 'search_failed',
+        },
+      };
+    } catch (error: any) {
+      console.warn('음식 검색: 예외 발생, 빈 배열 반환', error?.message);
+      return {
+        success: true,
+        data: [],
+        meta: {
+          usedFallback: true,
+          reason: error?.message || 'exception',
+        },
+      };
     }
   }
 
@@ -240,17 +420,15 @@ export class FoodService {
    */
   static async registerFood(foodId: number) {
     try {
-      const res = await api.post(`${API_CONFIG.ENDPOINTS.FOOD_REGISTER}/${foodId}`);
-      if ((res as any).success) return res as any;
-      try {
-        const proxy = await WebViewManager.requestApi({ path: `${API_CONFIG.ENDPOINTS.FOOD_REGISTER}/${foodId}`, method: 'POST', headers: { 'Accept': 'application/json' } });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          return { success: true, data: FoodService.normalizeValue<any>(proxy.data) } as any;
-        }
-      } catch {}
-      return res as any;
-    } catch (error) {
-      return { success: false, error: '식단 등록 실패' };
+      // front/src/api/foods.ts의 registerFood 함수를 직접 사용
+      const { registerFood } = await import('../api/foods');
+      const result = await registerFood(foodId);
+      return { success: true, data: result };
+    } catch (error: any) {
+      return { 
+        success: false, 
+        error: error?.message || '식단 등록 실패' 
+      };
     }
   }
 
@@ -261,17 +439,15 @@ export class FoodService {
    */
   static async unregisterFood(foodId: number) {
     try {
-      const res = await api.post(`${API_CONFIG.ENDPOINTS.FOOD_UNREGISTER}/${foodId}`);
-      if ((res as any).success) return res as any;
-      try {
-        const proxy = await WebViewManager.requestApi({ path: `${API_CONFIG.ENDPOINTS.FOOD_UNREGISTER}/${foodId}`, method: 'POST', headers: { 'Accept': 'application/json' } });
-        if (proxy.status >= 200 && proxy.status < 300) {
-          return { success: true, data: FoodService.normalizeValue<any>(proxy.data) } as any;
-        }
-      } catch {}
-      return res as any;
-    } catch (error) {
-      return { success: false, error: '식단 제거 실패' };
+      // front/src/api/foods.ts의 unregisterFood 함수를 직접 사용
+      const { unregisterFood } = await import('../api/foods');
+      const result = await unregisterFood(foodId);
+      return { success: true, data: result };
+    } catch (error: any) {
+      return { 
+        success: false, 
+        error: error?.message || '식단 제거 실패' 
+      };
     }
   }
 

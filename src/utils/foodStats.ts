@@ -98,8 +98,11 @@ export function normalizeFoodApiItem(item: FoodApiItem | null | undefined): Norm
 
   let registeredAt = normalizeRegisteredAt(item);
   if (!registeredAt) {
-    // 오늘 데이터일 가능성이 높으므로 현재 시각으로 보정
-    registeredAt = new Date().toISOString();
+    // 백엔드에서 registeredAt을 반환하지 않으므로, 주간 데이터는 오늘 날짜로 가정
+    // 주간 조회 시에는 백엔드가 이미 필터링한 데이터이므로 오늘 날짜로 처리
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    registeredAt = today.toISOString();
   }
 
   return {
@@ -143,20 +146,30 @@ export function aggregateWeeklyCalories(logs: NormalizedFoodLog[]): WeeklyCalori
   currentWeekMonday.setDate(currentWeekMonday.getDate() + diff);
   currentWeekMonday.setHours(0, 0, 0, 0);
 
+  // 백엔드가 이미 주간 데이터를 필터링해서 반환하므로,
+  // registeredAt이 없으면 순서대로 분배 (월요일부터)
+  let dayIndex = 0;
+  
   for (const log of logs) {
-    if (!log.registeredAt) continue;
-    const logDate = new Date(log.registeredAt);
-    if (Number.isNaN(logDate.getTime())) continue;
+    if (log.registeredAt) {
+      const logDate = new Date(log.registeredAt);
+      if (!Number.isNaN(logDate.getTime())) {
+        logDate.setHours(0, 0, 0, 0);
+        const calculatedDayIndex = (logDate.getDay() + 6) % 7; // Monday = 0
 
-    logDate.setHours(0, 0, 0, 0);
-    const dayIndex = (logDate.getDay() + 6) % 7; // Monday = 0
-
-    const diffDays = Math.floor(
-      (logDate.getTime() - currentWeekMonday.getTime()) / (1000 * 60 * 60 * 24)
-    );
-    if (diffDays < 0 || diffDays > 6) continue;
-
-    totals[dayIndex] += log.calories;
+        const diffDays = Math.floor(
+          (logDate.getTime() - currentWeekMonday.getTime()) / (1000 * 60 * 60 * 24)
+        );
+        if (diffDays >= 0 && diffDays <= 6) {
+          totals[calculatedDayIndex] += log.calories;
+          continue;
+        }
+      }
+    }
+    
+    // registeredAt이 없거나 유효하지 않으면 순서대로 분배
+    totals[dayIndex % 7] += log.calories;
+    dayIndex++;
   }
 
   const sum = totals.reduce((acc, value) => acc + value, 0);

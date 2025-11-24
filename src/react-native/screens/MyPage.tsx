@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -87,23 +88,67 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
   const [uploadingProfile, setUploadingProfile] = useState(false);
   const [updatingProfile, setUpdatingProfile] = useState(false);
 
-  useEffect(() => {
-    loadUserData();
-  }, []);
+  // 화면이 포커스를 받을 때마다 사용자 데이터 로드
+  useFocusEffect(
+    useCallback(() => {
+      loadUserData();
+    }, [])
+  );
 
   const loadUserData = async () => {
     try {
+      console.log('[MyPage] 사용자 정보 로드 시작');
+      
       const saved = await AsyncStorage.getItem('currentUser');
       const parsed = saved ? JSON.parse(saved) : null;
       let resolvedUser = parsed || {};
 
+      console.log('[MyPage] AsyncStorage에서 로드한 사용자 정보:', {
+        hasUser: !!parsed,
+        userKeys: parsed ? Object.keys(parsed) : [],
+        email: parsed?.email,
+        id: parsed?.id,
+        age: parsed?.age,
+        gender: parsed?.gender,
+        healthInfo: parsed?.healthInfo,
+        fullUser: parsed, // 전체 사용자 정보 로깅
+      });
+
       // 먼저 로컬 저장소의 정보를 표시 (빠른 로딩)
       if (resolvedUser && Object.keys(resolvedUser).length > 0) {
+        console.log('[MyPage] 로컬 사용자 정보 설정:', {
+          name: resolvedUser.name || resolvedUser.nickname,
+          email: resolvedUser.email,
+          age: resolvedUser.age,
+          gender: resolvedUser.gender,
+          healthInfo: resolvedUser.healthInfo,
+          hasHealthInfo: !!resolvedUser.healthInfo,
+        });
         setCurrentUser(resolvedUser);
+      } else {
+        console.warn('[MyPage] 로컬에 저장된 사용자 정보가 없습니다');
+        // 로컬 정보가 없어도 기본값으로 설정
+        setCurrentUser({});
       }
 
       // JWT 토큰에서 ID 추출 시도
-      let currentUserId = resolvedUser?.id || parsed?.id;
+      let currentUserId: string | number | null = resolvedUser?.id || parsed?.id;
+      
+      // id가 문자열이면 숫자로 변환 시도
+      if (currentUserId && typeof currentUserId === 'string') {
+        const numericId = Number(currentUserId);
+        if (!isNaN(numericId) && numericId > 0) {
+          currentUserId = numericId;
+        } else {
+          currentUserId = null;
+        }
+      }
+      
+      // id가 숫자가 아니거나 0 이하면 null로 처리
+      if (currentUserId && (typeof currentUserId !== 'number' || currentUserId <= 0)) {
+        currentUserId = null;
+      }
+
       if (!currentUserId) {
         try {
           const token = await AsyncStorage.getItem('@accessToken');
@@ -117,55 +162,125 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                 const Buffer = (await import('buffer')).Buffer;
                 const decoded = Buffer.from(padded, 'base64').toString('utf8');
                 const payload = JSON.parse(decoded);
-                // JWT payload에서 id 추출 (백엔드가 id를 포함하는 경우)
-                if (payload?.id || payload?.userId || payload?.sub) {
-                  currentUserId = payload.id || payload.userId || payload.sub;
-                  resolvedUser = { ...resolvedUser, id: currentUserId };
-                  await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
-                  setCurrentUser(resolvedUser);
-                }
+                
+                console.log('[MyPage] JWT payload:', {
+                  hasId: !!payload?.id,
+                  hasUserId: !!payload?.userId,
+                  hasSub: !!payload?.sub,
+                  hasEmail: !!payload?.email,
+                  sub: payload?.sub,
+                });
+                
+                // JWT payload에서 id 추출 시도
+                // 백엔드는 id를 포함하지 않을 수 있고, email만 있을 수 있음
+                // email로는 userId를 찾을 수 없으므로, 현재 로그인한 사용자 정보는 로컬에 저장된 것만 사용
+                // 추후 백엔드에 현재 로그인한 사용자 조회 API가 추가되면 사용 가능
               } catch (e) {
-                console.log('JWT 디코딩 실패:', e);
+                console.warn('[MyPage] JWT 디코딩 실패:', e);
               }
             }
           }
         } catch (e) {
-          console.log('토큰에서 ID 추출 실패:', e);
+          console.warn('[MyPage] JWT 토큰 읽기 실패:', e);
         }
       }
 
+      // 백엔드 프로필 조회 (userId가 숫자일 때만)
       let backendProfile = null;
       
-      // Try backend profile (userId가 있으면 백엔드에서 가져오기)
-      if (currentUserId) {
+      if (currentUserId && typeof currentUserId === 'number') {
         try {
+          console.log('[MyPage] 백엔드에서 사용자 프로필 조회 시도:', currentUserId);
           backendProfile = await UserService.getProfile(currentUserId);
+          
           if (backendProfile) {
-            // 백엔드 프로필과 병합하되, 로컬의 나이/성별/헬스 정보는 보존
+            console.log('[MyPage] 백엔드 프로필 조회 성공:', {
+              name: backendProfile.name,
+              email: backendProfile.email,
+              hasGender: !!backendProfile.gender,
+            });
+            
+            // 백엔드 프로필과 병합하되, 로컬의 나이/헬스 정보는 절대 덮어쓰지 않음
+            // 백엔드 UserResponse에는 healthInfo와 age가 포함되지 않으므로 로컬 값을 보존
+            // 중요한 것: resolvedUser의 age와 healthInfo를 명시적으로 보존
+            const savedAge = resolvedUser?.age;
+            const savedHealthInfo = resolvedUser?.healthInfo;
+            const savedGender = resolvedUser?.gender;
+            
+            console.log('[MyPage] 백엔드 병합 전 로컬 데이터:', {
+              savedAge,
+              savedHealthInfo,
+              savedGender,
+            });
+            
             resolvedUser = { 
-              ...resolvedUser, 
-              ...backendProfile,
-              // 로컬에 저장된 나이, 성별, 헬스 정보는 유지 (백엔드에 없을 수 있음)
-              age: resolvedUser?.age || backendProfile?.age,
-              gender: resolvedUser?.gender || backendProfile?.gender,
-              healthInfo: resolvedUser?.healthInfo || backendProfile?.healthInfo,
+              ...resolvedUser, // 로컬 정보를 먼저 유지
+              ...backendProfile, // 백엔드 기본 정보로 덮어쓰기 (name, email, nickname, gender 등)
+              // 로컬에 저장된 나이, 헬스 정보는 절대 덮어쓰지 않음 (백엔드 UserResponse에는 없음)
+              age: savedAge || null, // 명시적으로 로컬 값 보존
+              healthInfo: savedHealthInfo || null, // 명시적으로 로컬 값 보존
+              // 백엔드의 gender는 사용하되, 로컬 값이 있으면 우선 (백엔드가 더 정확할 수 있으므로 백엔드 우선)
+              gender: backendProfile?.gender || savedGender || null,
+              // name, nickname은 백엔드 우선
+              name: backendProfile?.name || resolvedUser?.name || resolvedUser?.nickname,
+              nickname: backendProfile?.nickname || resolvedUser?.nickname || resolvedUser?.name,
             };
+            
+            console.log('[MyPage] 백엔드 병합 후:', {
+              age: resolvedUser.age,
+              healthInfo: resolvedUser.healthInfo,
+              gender: resolvedUser.gender,
+            });
+            
             await AsyncStorage.setItem('currentUser', JSON.stringify(resolvedUser));
             setCurrentUser(resolvedUser);
+          } else {
+            console.log('[MyPage] 백엔드 프로필 조회 결과: null (404 또는 에러)');
           }
-        } catch (profileError) {
-          console.error('백엔드 프로필 조회 실패:', profileError);
+        } catch (profileError: any) {
+          console.warn('[MyPage] 백엔드 프로필 조회 실패:', profileError?.message || profileError);
           // 백엔드 조회 실패해도 로컬 데이터는 사용
         }
       } else {
-        // userId가 없어도 로컬 정보는 표시
-        setCurrentUser(resolvedUser);
+        console.log('[MyPage] userId가 없어 백엔드 프로필 조회 스킵:', currentUserId);
       }
 
+      // 헬스 정보가 없으면 별도로 확인 (헬스 정보 등록 후 저장되지 않았을 수 있음)
+      if (!resolvedUser?.healthInfo && !resolvedUser?.age && !resolvedUser?.gender) {
+        console.log('[MyPage] 헬스 정보가 없어 별도 확인 시도');
+        // 헬스 정보가 별도로 저장되어 있는지 확인 (예: @healthInfo:{email})
+        try {
+          const healthFlagKey = `@healthInfoInitialized:${resolvedUser?.email || parsed?.email || ''}`;
+          const healthFlag = await AsyncStorage.getItem(healthFlagKey);
+          if (healthFlag === '1') {
+            console.log('[MyPage] 헬스 정보 플래그가 있지만 currentUser에 정보가 없음 - 헬스 정보 등록 후 저장이 누락된 것으로 보임');
+            // 헬스 정보가 등록되었지만 currentUser에 저장되지 않은 경우
+            // 사용자에게 프로필 수정을 통해 다시 입력하도록 안내하거나
+            // 백엔드에서 가져올 수 있는 방법을 찾아야 함
+          }
+        } catch (e) {
+          console.warn('[MyPage] 헬스 정보 플래그 확인 실패:', e);
+        }
+      }
+
+      // 최종 사용자 정보 설정
       const resolvedUserId =
         (resolvedUser?.email || parsed?.email || backendProfile?.email || 'user@example.com') as string;
       setUserId(resolvedUserId);
+      
+      console.log('[MyPage] 최종 사용자 정보:', {
+        name: resolvedUser?.name || resolvedUser?.nickname,
+        email: resolvedUser?.email,
+        userId: resolvedUserId,
+        hasHealthInfo: !!resolvedUser?.healthInfo,
+        hasAge: !!resolvedUser?.age,
+        hasGender: !!resolvedUser?.gender,
+        healthInfo: resolvedUser?.healthInfo,
+        age: resolvedUser?.age,
+        gender: resolvedUser?.gender,
+      });
 
+      // 기타 데이터 로드
       const progress = await AsyncStorage.getItem(`userProgress_${resolvedUserId}`);
       if (progress) {
         setUserProgress(JSON.parse(progress));
@@ -188,8 +303,21 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       } else if (resolvedUser?.profileImageUrl) {
         setProfileImage(resolvedUser.profileImageUrl);
       }
-    } catch (error) {
-      console.error('Failed to load user data:', error);
+      
+      console.log('[MyPage] 사용자 정보 로드 완료');
+    } catch (error: any) {
+      console.error('[MyPage] 사용자 정보 로드 중 에러:', error?.message || error);
+      // 에러가 나도 최소한의 정보는 표시
+      try {
+        const saved = await AsyncStorage.getItem('currentUser');
+        const parsed = saved ? JSON.parse(saved) : null;
+        if (parsed && Object.keys(parsed).length > 0) {
+          setCurrentUser(parsed);
+          setUserId(parsed?.email || 'user@example.com');
+        }
+      } catch (fallbackError) {
+        console.error('[MyPage] Fallback 로드도 실패:', fallbackError);
+      }
     }
   };
 
@@ -207,7 +335,6 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       }
       Alert.alert('완료', response.data?.message || '프로필 사진이 업데이트되었습니다.');
     } catch (error: any) {
-      console.error('프로필 이미지 업로드 실패:', error);
       Alert.alert('업로드 실패', error?.message || '프로필 이미지를 업로드하지 못했습니다.');
     } finally {
       setUploadingProfile(false);
@@ -293,7 +420,6 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               Alert.alert('완료', response.data?.message || '계정이 삭제되었습니다.');
               if (onLoggedOut) onLoggedOut();
             } catch (error) {
-              console.error('계정 삭제 실패:', error);
               Alert.alert('삭제 실패', '계정 삭제 중 오류가 발생했습니다.');
             }
           },
@@ -302,21 +428,37 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
     );
   };
 
-  const healthInfo = currentUser?.healthInfo ?? {};
+  // healthInfo는 객체일 수도 있고, 없을 수도 있음
+  const healthInfo = (currentUser?.healthInfo && typeof currentUser.healthInfo === 'object') 
+    ? currentUser.healthInfo 
+    : {};
+  
+  console.log('[MyPage] 현재 사용자 정보 추출:', {
+    hasCurrentUser: !!currentUser,
+    hasHealthInfo: !!currentUser?.healthInfo,
+    healthInfoType: typeof currentUser?.healthInfo,
+    healthInfo: currentUser?.healthInfo,
+    age: currentUser?.age,
+    gender: currentUser?.gender,
+    heightFromHealthInfo: healthInfo?.height,
+    weightFromHealthInfo: healthInfo?.weight,
+    goalFromHealthInfo: healthInfo?.goal,
+  });
+  
   const heightValue =
-    healthInfo?.height !== undefined && healthInfo?.height !== null
+    (healthInfo?.height !== undefined && healthInfo?.height !== null)
       ? Number(healthInfo.height)
-      : currentUser?.height !== undefined && currentUser?.height !== null
+      : (currentUser?.height !== undefined && currentUser?.height !== null)
         ? Number(currentUser.height)
         : null;
   const weightValue =
-    healthInfo?.weight !== undefined && healthInfo?.weight !== null
+    (healthInfo?.weight !== undefined && healthInfo?.weight !== null)
       ? Number(healthInfo.weight)
-      : currentUser?.weight !== undefined && currentUser?.weight !== null
+      : (currentUser?.weight !== undefined && currentUser?.weight !== null)
         ? Number(currentUser.weight)
         : null;
   const goalLabel =
-    healthInfo?.goal && HEALTH_GOAL_LABELS[healthInfo.goal as HealthGoal]
+    (healthInfo?.goal && HEALTH_GOAL_LABELS[healthInfo.goal as HealthGoal])
       ? HEALTH_GOAL_LABELS[healthInfo.goal as HealthGoal]
       : '-';
   const genderLabel =
@@ -327,6 +469,18 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
         : currentUser?.gender === 'OTHER'
           ? '기타'
           : '-';
+  
+  console.log('[MyPage] 추출된 값:', {
+    heightValue,
+    weightValue,
+    goalLabel,
+    genderLabel,
+    age: currentUser?.age,
+    currentUserKeys: currentUser ? Object.keys(currentUser) : [],
+    currentUserAge: currentUser?.age,
+    currentUserGender: currentUser?.gender,
+    currentUserHealthInfo: currentUser?.healthInfo,
+  });
   const providerLabel =
     currentUser?.provider && PROVIDER_LABELS[currentUser.provider]
       ? PROVIDER_LABELS[currentUser.provider]
@@ -699,7 +853,6 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                     Alert.alert('완료', response.data?.message || '프로필이 수정되었습니다');
                     setShowEditModal(false);
                   } catch (error) {
-                    console.error('프로필 업데이트 실패:', error);
                     setUpdatingProfile(false);
                     // 백엔드 실패해도 로컬 저장
                     setCurrentUser(updatedUser);
@@ -720,54 +873,75 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f8fafc',
   },
   scrollView: {
     flex: 1,
   },
   scrollViewContent: {
-    paddingBottom: 80, // 탭바 높이 + 여유 공간
+    paddingBottom: 80,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
-    backgroundColor: '#fff',
+    paddingTop: 50,
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   editButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#f8fafc',
   },
   editButtonText: {
-    fontSize: 20,
+    fontSize: 22,
   },
   profileCard: {
-    margin: 16,
+    margin: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   profileHeader: {
     flexDirection: 'row',
-    marginBottom: 16,
+    marginBottom: 20,
   },
   avatarContainer: {
     position: 'relative',
-    marginRight: 16,
+    marginRight: 20,
   },
   avatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#f0f0f0',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#e2e8f0',
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   avatarUploadingOverlay: {
     position: 'absolute',
@@ -787,14 +961,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     right: 0,
-    backgroundColor: '#007AFF',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
+    backgroundColor: '#6366f1',
+    borderRadius: 14,
+    width: 28,
+    height: 28,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   avatarEditText: {
     fontSize: 12,
@@ -810,36 +989,39 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   name: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#0f172a',
   },
   tierBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    backgroundColor: '#f0f9ff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#007AFF',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#eff6ff',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#6366f1',
   },
   tierIcon: {
-    fontSize: 14,
+    fontSize: 16,
   },
   tierText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#007AFF',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6366f1',
   },
   email: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   exp: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 2,
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 4,
+    fontWeight: '500',
   },
   divider: {
     height: 1,
@@ -898,8 +1080,10 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
+    fontWeight: '700',
+    marginBottom: 16,
+    color: '#0f172a',
+    letterSpacing: -0.3,
   },
   settingItem: {
     flexDirection: 'row',

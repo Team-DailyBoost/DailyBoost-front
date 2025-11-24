@@ -64,15 +64,19 @@ export interface FoodResponse {
 
 /**
  * Food Recommendation
+ * 백엔드: FoodRecommendation (BigDecimal, Long 타입)
+ * - calory, carbohydrate, protein, fat: BigDecimal -> number
+ * - weight: Long -> number (그램 수)
  */
 export interface FoodRecommendation {
   name: string;
-  calory?: number;
-  carbohydrate?: number;
-  protein?: number;
-  fat?: number;
+  calory?: number | string; // BigDecimal -> number or string
+  carbohydrate?: number | string; // BigDecimal -> number or string
+  protein?: number | string; // BigDecimal -> number or string
+  fat?: number | string; // BigDecimal -> number or string
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number | string; // Long -> number or string (그램 수)
 }
 
 /**
@@ -84,8 +88,9 @@ export interface RecipeRequest {
 
 /**
  * Post Kind
+ * 백엔드: PostKind enum { EXERCISE, FOOD, DIET, COMPETITION }
  */
-export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET';
+export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET' | 'COMPETITION';
 
 /**
  * Post Create Request
@@ -309,18 +314,32 @@ export interface ExerciseInfoDto {
 }
 
 /**
- * Exercise Recommendation
+ * Exercise Recommendation Item
+ * 백엔드: ExerciseRecommendation (단일 항목)
+ * 응답: Api<List<ExerciseRecommendation>>
  */
-export interface ExerciseRecommendation {
-  exerciseInfoDto: ExerciseInfoDto[];
+export interface ExerciseRecommendationItem {
+  name: string;
+  description: string;
+  youtubeLink: string; // 백엔드: youtubeLink (단수)
+  level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
+  part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';
 }
 
 /**
+ * Exercise Recommendation (List)
+ * 백엔드 응답: List<ExerciseRecommendation>
+ */
+export type ExerciseRecommendation = ExerciseRecommendationItem[];
+
+/**
  * Exercise Request
+ * 백엔드: ExerciseRequest { userInput, level, part }
  */
 export interface ExerciseRequest {
   userInput: string;
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
+  part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';
 }
 
 /**

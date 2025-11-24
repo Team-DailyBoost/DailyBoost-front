@@ -140,7 +140,6 @@ export function Challenge() {
         await AsyncStorage.setItem(`userProgress_${userId}`, JSON.stringify(initial));
       }
     } catch (error) {
-      console.error('Failed to load progress:', error);
     }
   };
 
@@ -239,7 +238,6 @@ export function Challenge() {
         setCertificationImage(result.assets[0].uri);
       }
     } catch (error) {
-      console.error('Failed to pick certification image:', error);
       Alert.alert('오류', '이미지를 선택하는 중 문제가 발생했습니다.');
     }
   };
@@ -278,7 +276,6 @@ export function Challenge() {
         await addExp(selectedChallenge.exp / 5);
       }
     } catch (error) {
-      console.error('챌린지 인증 실패:', error);
       Alert.alert('오류', '인증을 저장하는 중 문제가 발생했습니다.');
     } finally {
       setIsSubmittingCertification(false);
@@ -381,7 +378,10 @@ export function Challenge() {
                     ]}
                     onPress={() => setTierTab(tier)}
                   >
-                    <Text style={styles.tierTabText}>{TIER_NAMES[tier]}</Text>
+                    <Text style={[
+                      styles.tierTabText,
+                      tierTab === tier && styles.tierTabTextActive
+                    ]}>{TIER_NAMES[tier]}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -683,21 +683,30 @@ export function Challenge() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f8fafc',
   },
   header: {
     padding: 20,
+    paddingTop: 50,
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
+    fontSize: 15,
+    color: '#64748b',
+    marginTop: 6,
+    fontWeight: '500',
   },
   tierCard: {
     margin: 16,
@@ -738,27 +747,31 @@ const styles = StyleSheet.create({
   },
   tabs: {
     flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#e2e8f0',
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    borderBottomWidth: 2,
+    borderBottomWidth: 3,
     borderBottomColor: 'transparent',
+    marginHorizontal: 4,
   },
   tabActive: {
-    borderBottomColor: '#007AFF',
+    borderBottomColor: '#6366f1',
   },
   tabText: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   tabTextActive: {
-    color: '#007AFF',
-    fontWeight: '600',
+    color: '#6366f1',
+    fontWeight: '700',
   },
   content: {
     flex: 1,
@@ -768,12 +781,19 @@ const styles = StyleSheet.create({
     paddingBottom: 80, // 탭바 높이 + 여유 공간
   },
   card: {
-    marginBottom: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   cardTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
+    fontWeight: '700',
+    marginBottom: 16,
+    color: '#0f172a',
+    letterSpacing: -0.3,
   },
   rankItem: {
     flexDirection: 'row',
@@ -803,18 +823,30 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   tierTabButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
   },
   tierTabButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   tierTabText: {
-    fontSize: 12,
+    fontSize: 13,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  tierTabTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
   },
   emptyText: {
     textAlign: 'center',
@@ -822,10 +854,17 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
   },
   challengeCard: {
-    padding: 12,
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
-    marginBottom: 12,
+    padding: 20,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    marginBottom: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
   challengeHeader: {
     flexDirection: 'row',

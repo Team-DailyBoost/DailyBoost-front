@@ -8,7 +8,6 @@ const injectedGenericApiScript = `
   (function() {
     try {
       var BACKEND_BASE = ${JSON.stringify(API_CONFIG.BASE_URL)};
-      // 범용 API 프록시: RN → WebView
       window.requestApiFromApp = async function(payloadJson) {
         var hbTimer = null;
         try {
@@ -20,22 +19,10 @@ const injectedGenericApiScript = `
           var body = payload.body || null;
           var id = payload.id || Date.now();
 
-          // 시작 알림 + 하트비트
-          try {
-            window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:start', id: id }));
-          } catch(e) {}
-          hbTimer = setInterval(function(){
-            try {
-              window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'api:heartbeat', id: id }));
-            } catch(e) {}
-          }, 4000);
-
-          // 쿼리스트링
           var qs = Object.keys(query).length
             ? '?' + Object.keys(query).map(function(k){ return encodeURIComponent(k) + '=' + encodeURIComponent(query[k]); }).join('&')
             : '';
 
-          // 동일 백엔드 절대 URL
           var fullUrl = path.indexOf('http') === 0 ? (path + qs) : (BACKEND_BASE + path + qs);
 
           var hasBody = typeof body !== 'undefined' && body !== null;
@@ -116,11 +103,6 @@ const injectedGenericApiScript = `
   })();
 `;
 
-/**
- * 로그인 이후 항상 유지되는 백그라운드 WebView
- * - WebViewManager가 항상 유효한 ref를 가지도록 보장
- * - RN에서 HTML 로그인 페이지가 떨어지는 경우, 이 WebView를 통해 API를 프록시
- */
 export function BackgroundWebView() {
   const ref = useRef<WebView>(null);
 
@@ -135,7 +117,6 @@ export function BackgroundWebView() {
   const handleMessage = (event: any) => {
     const raw = event.nativeEvent?.data;
     if (!raw) {
-      console.warn('⚠️ [BackgroundWebView] 빈 메시지 수신');
       return;
     }
     
@@ -143,12 +124,17 @@ export function BackgroundWebView() {
       const data = JSON.parse(raw);
       const t = data?.type;
       
-      // 모든 메시지 로깅 (디버깅용)
-      if (__DEV__) {
-        console.log('📨 [BackgroundWebView] 메시지 수신:', t, data?.id || data?.message || '');
-      }
-      
       if (typeof t === 'string' && t.startsWith('api:')) {
+        WebViewManager.handleGenericApiResponse(data);
+        return;
+      }
+      if (typeof t === 'string' && (t === 'debug:log' || t === 'debug:error')) {
+        // 디버그 로그는 콘솔에 출력
+        if (t === 'debug:log') {
+          console.log('[WebView Debug]', data?.message || '', data?.data || data);
+        } else if (t === 'debug:error') {
+          console.error('[WebView Error]', data?.message || '', data?.data || data);
+        }
         WebViewManager.handleGenericApiResponse(data);
         return;
       }
@@ -157,17 +143,11 @@ export function BackgroundWebView() {
         return;
       }
     } catch (e) {
-      // JSON 파싱 실패 시 원본 로깅
-      if (__DEV__) {
-        console.warn('⚠️ [BackgroundWebView] JSON 파싱 실패:', raw.substring(0, 100));
-      }
     }
   };
 
   const handleLoadEnd = () => {
-    console.log('✅ [BackgroundWebView] WebView 로드 완료');
     WebViewManager.setWebViewLoaded(true);
-    // 브리지 준비 확인
     if (ref.current) {
       setTimeout(() => {
         try {
@@ -184,20 +164,16 @@ export function BackgroundWebView() {
             true;
           `);
         } catch (e) {
-          console.error('❌ [BackgroundWebView] 브리지 확인 실패:', e);
         }
       }, 500);
     }
   };
 
   const handleLoadStart = () => {
-    console.log('🔄 [BackgroundWebView] WebView 로드 시작');
     WebViewManager.setWebViewLoaded(false);
   };
 
   const handleError = (syntheticEvent: any) => {
-    const { nativeEvent } = syntheticEvent;
-    console.error('❌ [BackgroundWebView] WebView 에러:', nativeEvent);
     WebViewManager.setWebViewLoaded(false);
   };
 
@@ -219,5 +195,3 @@ export function BackgroundWebView() {
     </View>
   );
 }
-
-

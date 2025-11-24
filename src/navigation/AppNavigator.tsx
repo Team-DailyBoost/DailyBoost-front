@@ -118,13 +118,11 @@ export function AppNavigator() {
       // 토큰 또는 쿠키가 있으면 로그인 상태로 간주
       setIsAuthenticated(!!(token || cookie || user));
     } catch (error) {
-      console.error('인증 상태 확인 오류:', error);
       setIsAuthenticated(false);
     }
   };
 
   const handleLoginSuccess = async () => {
-    console.log('✅ 로그인 성공 콜백 호출');
     await checkAuthStatus();
     setShowLogin(false);
   };

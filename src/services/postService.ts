@@ -3,7 +3,7 @@ import { api, API_CONFIG } from './api';
 /**
  * Post kind enum
  */
-export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET';
+export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET' | 'COMPETITION';
 
 /**
  * Post create request

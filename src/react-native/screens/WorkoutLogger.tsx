@@ -16,7 +16,6 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
 import { WorkoutService } from '../../services/workoutService';
-import { getExerciseRecommendation } from '../api/exercises';
 
 interface Exercise {
   id: string;
@@ -54,13 +53,16 @@ export function WorkoutLogger() {
   
   // 중복 호출 방지 플래그
   const requestingRecommendationsRef = useRef(false);
+  const requestingBodyPartRef = useRef(false);
   const [condition, setCondition] = useState<'good' | 'normal' | 'tired'>('normal');
   const [activeTab, setActiveTab] = useState<'recommendations' | 'logger'>('recommendations');
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(0);
   const [targetSeconds, setTargetSeconds] = useState(0);
-  const [todaysRecommendations, setTodaysRecommendations] = useState<Exercise[]>([]);
+  const [todaysRecommendations, setTodaysRecommendations] = useState<Exercise[]>([]); // 오늘의 추천 운동 (전신)
+  const [bodyPartRecommendations, setBodyPartRecommendations] = useState<Exercise[]>([]); // 부위별 운동 추천
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const [loadingBodyPartRecommendations, setLoadingBodyPartRecommendations] = useState(false);
 
   const openYoutubeLink = (url: string) => {
     if (!url) return;
@@ -229,7 +231,7 @@ const getPartLabel = (exercise: Exercise) =>
   (exercise.part
     ? EXERCISE_PART_META[exercise.part as keyof typeof EXERCISE_PART_META]?.label
     : BODY_PART_LABELS[exercise.bodyPart] ?? '전신');
-  // 운동 추천 API 호출 (중복 호출 방지)
+  // 오늘의 추천 운동 API 호출 (전신/HOME_TRAINING, 부위 선택 무시)
   const loadTodaysRecommendations = async () => {
     // 이미 요청 중이면 건너뜀
     if (requestingRecommendationsRef.current) {
@@ -240,18 +242,16 @@ const getPartLabel = (exercise: Exercise) =>
     setLoadingRecommendations(true);
     
     try {
-      // 실제 API 호출 (123 123 로그인 포함)
       const userStr = await AsyncStorage.getItem('currentUser');
       if (!userStr) {
         Alert.alert('알림', '로그인이 필요합니다.');
         return;
       }
 
-      // 운동 추천 API 호출
       const level = condition === 'good' ? 'ADVANCED' : condition === 'normal' ? 'INTERMEDIATE' : 'BEGINNER';
-      const userInput = `집에서 할 수 있는 운동을 ${workoutTime}분 동안 추천해줘. 컨디션은 ${condition === 'good' ? '좋음' : condition === 'normal' ? '보통' : '피곤함'}입니다.`;
+      const userInput = '집에서 할 수 있는 전신 운동을 추천해줘.';
       
-      const response = await WorkoutService.getExerciseRecommendation(userInput, level);
+      const response = await WorkoutService.getExerciseRecommendation(userInput, level, 'HOME_TRAINING');
 
       if (response.success && response.data) {
         const raw = response.data as any;
@@ -276,24 +276,11 @@ const getPartLabel = (exercise: Exercise) =>
 
       throw new Error(response.error || '운동 추천 실패');
     } catch (error: any) {
-      Alert.alert('오류', `운동 추천 중 오류가 발생했습니다.\n${error.message || error}`);
-      
-      // 에러 시 더미 데이터 사용 (fallback)
-      const day = new Date().getDay();
-      const recommendations: Record<number, string[]> = {
-        0: ['pushup', 'squat', 'pullup', 'shoulder_press', 'running'],
-        1: ['bench_press', 'squat', 'lat_pulldown', 'running'],
-        2: ['pushup', 'lunge', 'shoulder_press', 'hiit'],
-        3: ['dips', 'squat', 'pullup', 'running'],
-        4: ['pushup', 'lunge', 'lat_pulldown', 'hiit'],
-        5: ['bench_press', 'squat', 'shoulder_press', 'running'],
-        6: ['pushup', 'lunge', 'pullup', 'hiit'],
-      };
-      const todayIds = recommendations[day] || recommendations[0];
-      const exercises = todayIds
-        .map((id) => exerciseDatabase.find((e) => e.id === id))
-        .filter((item): item is Exercise => Boolean(item))
-        .map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
+      console.log('[WorkoutLogger] 오늘의 추천 운동 실패:', error.message || error);
+      // fallback 데이터 사용
+      const { getRandomExerciseRecommendations } = await import('../../constants/fallbacks');
+      const fallbackExercises = getRandomExerciseRecommendations(5, 'HOME_TRAINING');
+      const exercises = fallbackExercises.map((item, index) => convertRecommendationToExercise(item, index));
       setTodaysRecommendations(exercises);
     } finally {
       setLoadingRecommendations(false);
@@ -301,41 +288,110 @@ const getPartLabel = (exercise: Exercise) =>
     }
   };
 
-  const getTodaysRecommendations = (): Exercise[] => {
-    // 이미 로드된 추천이 있으면 사용
-    if (todaysRecommendations.length > 0) {
-      return todaysRecommendations;
+  // 부위별 운동 추천 API 호출
+  const loadBodyPartRecommendations = async (bodyPartId: string) => {
+    if (!bodyPartId || requestingBodyPartRef.current) {
+      return;
     }
-    
-    // 없으면 로컬 더미 데이터
-    const day = new Date().getDay();
-    const recommendations: Record<number, string[]> = {
-      0: ['pushup', 'squat', 'pullup', 'shoulder_press', 'running'],
-      1: ['bench_press', 'squat', 'lat_pulldown', 'running'],
-      2: ['pushup', 'lunge', 'shoulder_press', 'hiit'],
-      3: ['dips', 'squat', 'pullup', 'running'],
-      4: ['pushup', 'lunge', 'lat_pulldown', 'hiit'],
-      5: ['bench_press', 'squat', 'shoulder_press', 'running'],
-      6: ['pushup', 'lunge', 'pullup', 'hiit'],
-    };
 
-    const todayIds = recommendations[day] || recommendations[0];
-    return todayIds
-      .map((id) => exerciseDatabase.find((e) => e.id === id))
-      .filter((item): item is Exercise => Boolean(item))
-      .map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
+    requestingBodyPartRef.current = true;
+    setLoadingBodyPartRecommendations(true);
+    
+    try {
+      const userStr = await AsyncStorage.getItem('currentUser');
+      if (!userStr) {
+        return;
+      }
+
+      const partMap: Record<string, 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING'> = {
+        'chest': 'CHEST',
+        'back': 'BACK',
+        'shoulder': 'SHOULDER',
+        'legs': 'LOWER_BODY',
+        'biceps': 'BICEPS',
+        'triceps': 'TRICEPS',
+        'cardio': 'CARDIO',
+      };
+      const part = partMap[bodyPartId] || 'HOME_TRAINING';
+      const partLabel = bodyParts.find(p => p.id === bodyPartId)?.name || '전신';
+      const level = condition === 'good' ? 'ADVANCED' : condition === 'normal' ? 'INTERMEDIATE' : 'BEGINNER';
+      const userInput = `${partLabel} 운동을 추천해줘.`;
+      
+      const response = await WorkoutService.getExerciseRecommendation(userInput, level, part);
+
+      if (response.success && response.data) {
+        const raw = response.data as any;
+        const normalizedList: any[] = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.exerciseInfoDto)
+          ? raw.exerciseInfoDto
+          : [];
+
+        if (normalizedList.length > 0) {
+          const exercises = normalizedList.map((item, index) => convertRecommendationToExercise(item, index));
+          setBodyPartRecommendations(exercises);
+          return;
+        }
+      }
+
+      if (response.meta?.usedFallback && Array.isArray(response.data)) {
+        const exercises = (response.data as any[]).map((item, index) => convertRecommendationToExercise(item, index));
+        setBodyPartRecommendations(exercises);
+        return;
+      }
+
+      throw new Error(response.error || '운동 추천 실패');
+    } catch (error: any) {
+      console.log('[WorkoutLogger] 부위별 운동 추천 실패:', error.message || error);
+      // fallback 데이터 사용
+      const { getRandomExerciseRecommendations } = await import('../../constants/fallbacks');
+      const partMap: Record<string, 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING'> = {
+        'chest': 'CHEST',
+        'back': 'BACK',
+        'shoulder': 'SHOULDER',
+        'legs': 'LOWER_BODY',
+        'biceps': 'BICEPS',
+        'triceps': 'TRICEPS',
+        'cardio': 'CARDIO',
+      };
+      const part = partMap[bodyPartId] || 'HOME_TRAINING';
+      const fallbackExercises = getRandomExerciseRecommendations(5, part);
+      const exercises = fallbackExercises.map((item, index) => convertRecommendationToExercise(item, index));
+      setBodyPartRecommendations(exercises);
+    } finally {
+      setLoadingBodyPartRecommendations(false);
+      requestingBodyPartRef.current = false;
+    }
+  };
+
+  const getTodaysRecommendations = (): Exercise[] => {
+    return todaysRecommendations;
   };
 
   const getBodyPartRecommendations = (bodyPart: string): Exercise[] => {
+    // 부위별 추천이 있으면 반환, 없으면 로컬 데이터베이스 사용
+    if (bodyPart && bodyPartRecommendations.length > 0) {
+      return bodyPartRecommendations;
+    }
     const filtered = exerciseDatabase.filter((e) => e.bodyPart === bodyPart);
     return filtered.slice(0, 5).map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
   };
 
-  const addWorkout = (exercise: Exercise) => {
+  const addWorkout = async (exercise: Exercise) => {
     const exists = todaysWorkouts.some(w => w.exercise.id === exercise.id);
     if (exists) {
-      alert('이미 추가된 운동입니다!');
+      Alert.alert('알림', '이미 추가된 운동입니다!');
       return;
+    }
+
+    // 백엔드에 운동 등록 시도 (exerciseId가 있는 경우)
+    if (exercise.id && exercise.id.startsWith('ai_')) {
+      try {
+        // AI 추천 운동의 경우 백엔드에 등록된 exerciseId를 찾아야 함
+        // 일단 로컬에만 저장하고 나중에 백엔드와 동기화
+      } catch (error) {
+        // 백엔드 등록 실패해도 로컬에 저장
+      }
     }
 
     const suggestedSets = condition === 'tired' ? 2 : condition === 'normal' ? 3 : 4;
@@ -352,6 +408,21 @@ const getPartLabel = (exercise: Exercise) =>
       time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
     };
     setTodaysWorkouts(prev => [...prev, newWorkout]);
+    
+    // 추천 목록에서 해당 운동 제거
+    setTodaysRecommendations(prev => 
+      prev.filter(rec => rec.id !== exercise.id && rec.name !== exercise.name)
+    );
+    
+    // 로컬 저장
+    try {
+      const saved = await AsyncStorage.getItem('todaysWorkouts');
+      const workouts = saved ? JSON.parse(saved) : [];
+      workouts.push(newWorkout);
+      await AsyncStorage.setItem('todaysWorkouts', JSON.stringify(workouts));
+    } catch (error) {
+      // 저장 실패 시 무시
+    }
   };
 
   const removeWorkout = (id: string) => {
@@ -426,15 +497,10 @@ const getPartLabel = (exercise: Exercise) =>
     AsyncStorage.setItem('workoutTimerSeconds', '0');
   };
 
-  // 초기 로드
+  // 초기 로드 - 오늘의 추천 운동 자동 로드
   useEffect(() => {
-    const initialRecommendations = getTodaysRecommendations();
-    if (initialRecommendations.length > 0 && todaysRecommendations.length === 0) {
-      setTodaysRecommendations(initialRecommendations);
-    }
+    loadTodaysRecommendations();
   }, []);
-
-  const bodyPartRecommendations = selectedBodyPart ? getBodyPartRecommendations(selectedBodyPart) : [];
 
   return (
     <View style={styles.container}>
@@ -500,11 +566,18 @@ const getPartLabel = (exercise: Exercise) =>
                     style={[styles.conditionButton, condition === item.value && styles.conditionButtonActive]}
                     onPress={() => {
                       setCondition(item.value as any);
-                      // 컨디션 변경 시 추천 다시 로드
+                      // 컨디션 변경 시 오늘의 추천 운동만 다시 로드
                       setTimeout(() => loadTodaysRecommendations(), 100);
+                      // 부위별 추천이 있으면 다시 로드
+                      if (selectedBodyPart) {
+                        setTimeout(() => loadBodyPartRecommendations(selectedBodyPart), 200);
+                      }
                     }}
                   >
-                    <Text style={styles.conditionButtonText}>{item.label}</Text>
+                    <Text style={[
+                      styles.conditionButtonText,
+                      condition === item.value && styles.conditionButtonTextActive
+                    ]}>{item.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -575,7 +648,17 @@ const getPartLabel = (exercise: Exercise) =>
                   <TouchableOpacity
                     key={part.id}
                     style={[styles.bodyPart, selectedBodyPart === part.id && styles.bodyPartActive]}
-                    onPress={() => setSelectedBodyPart(part.id)}
+                    onPress={() => {
+                      const newSelected = selectedBodyPart === part.id ? '' : part.id;
+                      setSelectedBodyPart(newSelected);
+                      // 부위 선택 시 부위별 추천 로드
+                      if (newSelected) {
+                        setTimeout(() => loadBodyPartRecommendations(newSelected), 100);
+                      } else {
+                        // 부위 선택 해제 시 부위별 추천 초기화
+                        setBodyPartRecommendations([]);
+                      }
+                    }}
                   >
                     <Text style={styles.bodyPartIcon}>{part.icon}</Text>
                     <Text style={styles.bodyPartText}>{part.name}</Text>
@@ -583,29 +666,61 @@ const getPartLabel = (exercise: Exercise) =>
                 ))}
               </View>
 
-              {selectedBodyPart && bodyPartRecommendations.map((exercise, idx) => (
-                <View key={exercise.id} style={styles.exerciseCard}>
-                  <View style={[styles.exerciseNumber, styles.exerciseNumberSecondary]}>
-                    <Text style={styles.exerciseNumberText}>{idx + 1}</Text>
-                  </View>
-                  <View style={styles.exerciseContent}>
-                    <Text style={styles.exerciseName}>{exercise.name}</Text>
-                    <Text style={styles.exerciseMeta}>
-                      {getPartLabel(exercise)} · {getDifficultyLabel(exercise.difficulty)}
-                    </Text>
-                    <Text style={styles.exerciseDesc}>{exercise.description}</Text>
-                    {exercise.youtubeLink ? (
-                      <TouchableOpacity
-                        style={styles.exerciseLinkWrapper}
-                        onPress={() => exercise.youtubeLink && openYoutubeLink(exercise.youtubeLink)}
-                      >
-                        <Text style={styles.exerciseLink}>🎬 시연 영상 보기</Text>
-                      </TouchableOpacity>
-                    ) : null}
-                    <Button title="추가" onPress={() => addWorkout(exercise)} />
-                  </View>
+              {selectedBodyPart && (
+                <View style={styles.bodyPartRecommendationsHeader}>
+                  <Text style={styles.bodyPartRecommendationsTitle}>
+                    {bodyParts.find(p => p.id === selectedBodyPart)?.name} 운동 추천
+                  </Text>
+                  {loadingBodyPartRecommendations && (
+                    <ActivityIndicator size="small" color="#6366f1" />
+                  )}
                 </View>
-              ))}
+              )}
+
+              {selectedBodyPart && (
+                <>
+                  {loadingBodyPartRecommendations ? (
+                    <View style={styles.loadingContainer}>
+                      <ActivityIndicator size="large" color="#6366f1" />
+                      <Text style={styles.loadingText}>운동 추천을 불러오는 중...</Text>
+                    </View>
+                  ) : bodyPartRecommendations.length > 0 ? (
+                    bodyPartRecommendations.map((exercise, idx) => (
+                      <View key={exercise.id} style={styles.exerciseCard}>
+                        <View style={[styles.exerciseNumber, styles.exerciseNumberSecondary]}>
+                          <Text style={styles.exerciseNumberText}>{idx + 1}</Text>
+                        </View>
+                        <View style={styles.exerciseContent}>
+                          <Text style={styles.exerciseName}>{exercise.name}</Text>
+                          <Text style={styles.exerciseMeta}>
+                            {getPartLabel(exercise)} · {getDifficultyLabel(exercise.difficulty)}
+                          </Text>
+                          <Text style={styles.exerciseDesc}>{exercise.description}</Text>
+                          {exercise.youtubeLink ? (
+                            <TouchableOpacity
+                              style={styles.exerciseLinkWrapper}
+                              onPress={() => exercise.youtubeLink && openYoutubeLink(exercise.youtubeLink)}
+                            >
+                              <Text style={styles.exerciseLink}>🎬 시연 영상 보기</Text>
+                            </TouchableOpacity>
+                          ) : null}
+                          <Button title="추가" onPress={() => addWorkout(exercise)} />
+                        </View>
+                      </View>
+                    ))
+                  ) : (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>추천 운동이 없습니다</Text>
+                      <TouchableOpacity
+                        style={styles.reloadButtonSmall}
+                        onPress={() => loadBodyPartRecommendations(selectedBodyPart)}
+                      >
+                        <Text style={styles.reloadButtonTextSmall}>다시 시도</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
+              )}
             </Card>
           </View>
         ) : (
@@ -733,60 +848,84 @@ const getPartLabel = (exercise: Exercise) =>
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f8fafc',
   },
   scrollView: {
     flex: 1,
   },
   scrollViewContent: {
-    paddingBottom: 80, // 탭바 높이 + 여유 공간
+    paddingBottom: 80,
   },
   header: {
     padding: 20,
+    paddingTop: 50,
     alignItems: 'center',
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
+    fontSize: 15,
+    color: '#64748b',
+    marginTop: 6,
+    fontWeight: '500',
   },
   tabs: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginBottom: 16,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 16,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#e2e8f0',
+    marginBottom: 20,
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    borderBottomWidth: 2,
+    borderBottomWidth: 3,
     borderBottomColor: 'transparent',
+    marginHorizontal: 4,
   },
   tabActive: {
-    borderBottomColor: '#007AFF',
+    borderBottomColor: '#6366f1',
   },
   tabText: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   tabTextActive: {
-    color: '#007AFF',
-    fontWeight: '600',
+    color: '#6366f1',
+    fontWeight: '700',
   },
   content: {
-    padding: 16,
+    padding: 20,
   },
   card: {
-    marginBottom: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   cardTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
+    fontWeight: '700',
+    marginBottom: 16,
+    color: '#0f172a',
+    letterSpacing: -0.3,
   },
   cardHeaderWithRefresh: {
     flexDirection: 'row',
@@ -802,15 +941,20 @@ const styles = StyleSheet.create({
   },
   reloadButton: {
     backgroundColor: '#6366f1',
-    padding: 12,
-    borderRadius: 8,
+    padding: 14,
+    borderRadius: 16,
     alignItems: 'center',
-    marginTop: 16,
+    marginTop: 20,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   reloadButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   label: {
     fontSize: 14,
@@ -824,23 +968,31 @@ const styles = StyleSheet.create({
   },
   timeButton: {
     flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
     alignItems: 'center',
+    backgroundColor: '#ffffff',
   },
   timeButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   timeButtonText: {
     fontSize: 14,
-    color: '#333',
+    color: '#64748b',
+    fontWeight: '600',
   },
   timeButtonTextActive: {
-    color: '#fff',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   conditionButtons: {
     flexDirection: 'row',
@@ -848,37 +1000,61 @@ const styles = StyleSheet.create({
   },
   conditionButton: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
     alignItems: 'center',
+    backgroundColor: '#ffffff',
   },
   conditionButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   conditionButtonText: {
     fontSize: 14,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  conditionButtonTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
   },
   exerciseCard: {
     flexDirection: 'row',
-    marginBottom: 12,
-    padding: 12,
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
+    marginBottom: 14,
+    padding: 18,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   exerciseNumber: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#007AFF',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#6366f1',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 16,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   exerciseNumberSecondary: {
-    backgroundColor: '#666',
+    backgroundColor: '#64748b',
   },
   exerciseNumberText: {
     color: '#fff',
@@ -1039,5 +1215,45 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#666',
     paddingVertical: 32,
+  },
+  bodyPartRecommendationsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  bodyPartRecommendationsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  loadingContainer: {
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#64748b',
+  },
+  emptyContainer: {
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reloadButtonSmall: {
+    marginTop: 16,
+    backgroundColor: '#6366f1',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  reloadButtonTextSmall: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

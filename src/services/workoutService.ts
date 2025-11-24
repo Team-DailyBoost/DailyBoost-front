@@ -1,6 +1,6 @@
 import { api, API_CONFIG } from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { FALLBACK_EXERCISE_RECOMMENDATIONS } from '../constants/fallbacks';
+import { getRandomExerciseRecommendations } from '../constants/fallbacks';
 import { ServiceResult } from '../types/service';
 import type { ExerciseRecommendationItem } from '../api/exercises';
 
@@ -123,85 +123,52 @@ export class WorkoutService {
     part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING' = 'HOME_TRAINING'
   ): Promise<ServiceResult<ExerciseRecommendationItem[]>> {
     try {
-      // 사용자 정보 가져오기 (AsyncStorage 또는 API)
-      let userInfoText = '';
-      try {
-        const currentUserStr = await AsyncStorage.getItem('currentUser');
-        if (currentUserStr) {
-          const currentUser = JSON.parse(currentUserStr);
-          
-          // 사용자 정보를 텍스트로 구성
-          const infoParts: string[] = [];
-          
-          // 키, 몸무게, 목표 정보가 있으면 포함
-          if (currentUser.healthInfo) {
-            const { height, weight, goal } = currentUser.healthInfo;
-            if (height) infoParts.push(`키: ${height}cm`);
-            if (weight) infoParts.push(`몸무게: ${weight}kg`);
-            if (goal) {
-              const goalNames: Record<string, string> = {
-                'WEIGHT_LOSS': '체중 감량',
-                'MUSCLE_GAIN': '근육 증가',
-                'STRENGTH_IMPROVEMENT': '근력 향상',
-                'ENDURANCE_IMPROVEMENT': '지구력 향상',
-                'GENERAL_HEALTH_MAINTENANCE': '일반 건강 유지',
-                'BODY_SHAPE_MANAGEMENT': '체형 관리'
-              };
-              infoParts.push(`목표: ${goalNames[goal] || goal}`);
-            }
-          }
-          
-          // 성별, 나이 정보가 있으면 포함
-          if (currentUser.gender) {
-            const genderNames: Record<string, string> = {
-              'MALE': '남성',
-              'FEMALE': '여성',
-              'OTHER': '기타'
-            };
-            infoParts.push(`성별: ${genderNames[currentUser.gender] || currentUser.gender}`);
-          }
-          if (currentUser.age) {
-            infoParts.push(`나이: ${currentUser.age}세`);
-          }
-          
-          if (infoParts.length > 0) {
-            userInfoText = `\n\n사용자 정보: ${infoParts.join(', ')}`;
-          }
-        }
-      } catch (userInfoError) {
-        console.log('⚠️ 사용자 정보 가져오기 실패 (무시하고 계속):', userInfoError);
-      }
-      
-      // 사용자 정보를 포함한 userInput 구성
-      const enhancedUserInput = userInput + userInfoText;
-      
       // 우리가 만든 client.ts 기반 API 사용
       const { getExerciseRecommendation } = await import('../api/exercises');
-      const result = await getExerciseRecommendation(enhancedUserInput, level, part);
+      const result = await getExerciseRecommendation(userInput, level, part);
       
+      // result가 배열이고 비어있지 않으면 그대로 반환
+      if (Array.isArray(result) && result.length > 0) {
+        return {
+          success: true,
+          data: result,
+        };
+      }
       
+      // 빈 배열이거나 null이면 랜덤 더미 데이터 사용
       return {
         success: true,
-        data: result,
+        data: getRandomExerciseRecommendations(5),
+        meta: {
+          usedFallback: true,
+          reason: '운동 추천 API가 빈 결과를 반환했습니다.',
+        },
       };
     } catch (error: any) {
+      const message = String(error?.message || '');
       
       // 인증 오류인 경우
-      if (error.response?.status === 401 || error.response?.status === 403) {
+      if (
+        error.response?.status === 401 ||
+        error.response?.status === 403 ||
+        message.includes('401') ||
+        message.includes('403')
+      ) {
         return {
           success: false,
           error: '인증이 필요합니다. OAuth2 소셜 로그인(카카오/네이버)으로 다시 로그인해주세요.',
         };
       }
       
+      // 500, 404 등 서버 에러는 fallback 사용
       const reason = typeof error?.message === 'string' && error.message.trim().length > 0
         ? error.message
         : 'AI 운동 추천 서버가 응답하지 않습니다.';
-      console.warn('⚠️ 운동 추천 API 실패 - 기본 추천으로 대체:', reason);
 
+      console.log('[WorkoutService] 운동 추천 실패, 랜덤 더미 데이터 사용:', reason);
       return {
         success: true,
-        data: FALLBACK_EXERCISE_RECOMMENDATIONS,
+        data: getRandomExerciseRecommendations(5),
         meta: {
           usedFallback: true,
           reason,
@@ -212,14 +179,16 @@ export class WorkoutService {
 
   /**
    * Register exercise recommendation
-   * 백엔드: POST /api/exercise/register
+   * 백엔드: POST /api/exercise/register/{exerciseId}
    * Note: Requires authentication
    */
-  static async registerExercise(exerciseRecommendation: any) {
+  static async registerExercise(exerciseId: number) {
     try {
-      return await api.post(API_CONFIG.ENDPOINTS.EXERCISE_REGISTER, exerciseRecommendation);
-    } catch (error) {
-      return { success: false, error: '운동 등록 실패' };
+      const { registerExercise } = await import('../api/exercises');
+      const result = await registerExercise(exerciseId);
+      return { success: true, data: result };
+    } catch (error: any) {
+      return { success: false, error: error?.message || '운동 등록 실패' };
     }
   }
 }

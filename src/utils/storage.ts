@@ -1,128 +1,147 @@
-/**
- * AsyncStorage 유틸리티
- * 중복 코드 제거 및 통합 관리
- */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
- * 토큰 관련 키
+ * 인증 토큰 및 세션 관리 유틸리티
+ * 
+ * JWT 기반 인증을 우선 사용하고, 세션 쿠키는 보조 수단으로 사용합니다.
  */
-export const ACCESS_TOKEN_KEYS = ['@accessToken', 'authToken'] as const;
-export const REFRESH_TOKEN_KEYS = ['@refreshToken', 'refreshToken'] as const;
-export const SESSION_COOKIE_KEYS = ['@sessionCookie', 'JSESSIONID'] as const;
+const ACCESS_TOKEN_KEY = '@accessToken';
+const REFRESH_TOKEN_KEY = '@refreshToken';
+const SESSION_COOKIE_KEY = '@sessionCookie';
 
 /**
- * AsyncStorage에서 값 가져오기 (여러 키 시도)
+ * AccessToken과 RefreshToken을 저장합니다.
+ * 
+ * @param accessToken JWT AccessToken (Bearer 포함 여부 자동 처리)
+ * @param refreshToken JWT RefreshToken (선택)
  */
-export async function getStorageValue(keys: readonly string[]): Promise<string | null> {
+export async function saveTokens(accessToken: string, refreshToken?: string): Promise<void> {
   try {
-    for (const key of keys) {
-      const value = await AsyncStorage.getItem(key);
-      if (value && value.trim().length > 0) {
-        return value;
-      }
+    // accessToken에 'Bearer '가 없으면 추가하지 않고 그대로 저장
+    // (http.ts에서 헤더에 붙일 때 'Bearer '를 추가함)
+    await AsyncStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    
+    if (refreshToken) {
+      await AsyncStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
     }
-    return null;
+    
+    console.log('[DEBUG] saveTokens: accessToken saved, refreshToken', refreshToken ? 'saved' : 'not provided');
   } catch (error) {
-    return null;
+    console.error('[DEBUG] saveTokens error:', error);
+    throw error;
   }
 }
 
 /**
- * AsyncStorage에 값 저장 (여러 키에 동시 저장)
- */
-export async function setStorageValue(keys: readonly string[], value: string): Promise<void> {
-  try {
-    await Promise.all(keys.map((key) => AsyncStorage.setItem(key, value)));
-  } catch (error) {
-    // Ignore error
-  }
-}
-
-/**
- * AsyncStorage에서 값 제거 (여러 키에서 동시 제거)
- */
-export async function removeStorageValue(keys: readonly string[]): Promise<void> {
-  try {
-    await Promise.all(keys.map((key) => AsyncStorage.removeItem(key)));
-  } catch (error) {
-    // Ignore error
-  }
-}
-
-/**
- * JWT 토큰 가져오기
+ * AccessToken을 조회합니다.
+ * 
+ * @returns AccessToken 또는 null
  */
 export async function getAccessToken(): Promise<string | null> {
-  return getStorageValue(ACCESS_TOKEN_KEYS);
+  try {
+    const token = await AsyncStorage.getItem(ACCESS_TOKEN_KEY);
+    console.log('[DEBUG] getAccessToken =', token ? 'found' : 'null');
+    return token;
+  } catch (error) {
+    console.error('[DEBUG] getAccessToken error:', error);
+    return null;
+  }
 }
 
 /**
- * JWT 토큰 저장
- */
-export async function setAccessToken(token: string): Promise<void> {
-  return setStorageValue(ACCESS_TOKEN_KEYS, token);
-}
-
-/**
- * JWT 토큰 제거
- */
-export async function removeAccessToken(): Promise<void> {
-  return removeStorageValue(ACCESS_TOKEN_KEYS);
-}
-
-/**
- * Refresh 토큰 가져오기
+ * RefreshToken을 조회합니다.
+ * 
+ * @returns RefreshToken 또는 null
  */
 export async function getRefreshToken(): Promise<string | null> {
-  return getStorageValue(REFRESH_TOKEN_KEYS);
+  try {
+    const token = await AsyncStorage.getItem(REFRESH_TOKEN_KEY);
+    return token;
+  } catch (error) {
+    console.error('[DEBUG] getRefreshToken error:', error);
+    return null;
+  }
 }
 
 /**
- * Refresh 토큰 저장
+ * 세션 쿠키(JSESSIONID)를 저장합니다.
+ * 
+ * @param jsessionId JSESSIONID 값 (JSESSIONID= 포함 여부 자동 처리)
  */
-export async function setRefreshToken(token: string): Promise<void> {
-  return setStorageValue(REFRESH_TOKEN_KEYS, token);
+export async function saveSessionCookie(jsessionId: string): Promise<void> {
+  try {
+    // jsessionId가 'JSESSIONID=' 형태인지 확인
+    let cookieValue = jsessionId;
+    if (!cookieValue.includes('JSESSIONID=')) {
+      cookieValue = `JSESSIONID=${cookieValue}`;
+    }
+    
+    // 세미콜론 이후 제거
+    if (cookieValue.includes(';')) {
+      cookieValue = cookieValue.split(';')[0];
+    }
+    
+    await AsyncStorage.setItem(SESSION_COOKIE_KEY, cookieValue);
+    console.log('[DEBUG] saveSessionCookie: saved');
+  } catch (error) {
+    console.error('[DEBUG] saveSessionCookie error:', error);
+    throw error;
+  }
 }
 
 /**
- * Refresh 토큰 제거
- */
-export async function removeRefreshToken(): Promise<void> {
-  return removeStorageValue(REFRESH_TOKEN_KEYS);
-}
-
-/**
- * 세션 쿠키 가져오기
+ * 세션 쿠키(JSESSIONID)를 조회합니다.
+ * 
+ * @returns JSESSIONID 쿠키 또는 null
  */
 export async function getSessionCookie(): Promise<string | null> {
-  return getStorageValue(SESSION_COOKIE_KEYS);
+  try {
+    const cookie = await AsyncStorage.getItem(SESSION_COOKIE_KEY);
+    console.log('[DEBUG] getSessionCookie =', cookie ? 'found' : 'null');
+    return cookie;
+  } catch (error) {
+    console.error('[DEBUG] getSessionCookie error:', error);
+    return null;
+  }
 }
 
 /**
- * 세션 쿠키 저장
+ * 모든 인증 정보를 삭제합니다.
  */
+export async function clearAuth(): Promise<void> {
+  try {
+    await AsyncStorage.multiRemove([ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, SESSION_COOKIE_KEY]);
+    console.log('[DEBUG] clearAuth: all auth data removed');
+  } catch (error) {
+    console.error('[DEBUG] clearAuth error:', error);
+  }
+}
+
+// 하위 호환성을 위한 별칭 함수들
+export async function setAccessToken(token: string): Promise<void> {
+  await AsyncStorage.setItem(ACCESS_TOKEN_KEY, token);
+}
+
+export async function removeAccessToken(): Promise<void> {
+  await AsyncStorage.removeItem(ACCESS_TOKEN_KEY);
+}
+
+export async function setRefreshToken(token: string): Promise<void> {
+  await AsyncStorage.setItem(REFRESH_TOKEN_KEY, token);
+}
+
+export async function removeRefreshToken(): Promise<void> {
+  await AsyncStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
 export async function setSessionCookie(cookie: string): Promise<void> {
-  // JSESSIONID=ABC123 형식에서 값만 추출
-  const sessionId = cookie.includes('=') ? cookie.split('=')[1].split(';')[0] : cookie;
-  return setStorageValue(SESSION_COOKIE_KEYS, sessionId);
+  return saveSessionCookie(cookie);
 }
 
-/**
- * 세션 쿠키 제거
- */
 export async function removeSessionCookie(): Promise<void> {
-  return removeStorageValue(SESSION_COOKIE_KEYS);
+  await AsyncStorage.removeItem(SESSION_COOKIE_KEY);
 }
 
-/**
- * 모든 인증 정보 제거
- */
 export async function clearAllAuth(): Promise<void> {
-  await Promise.all([
-    removeAccessToken(),
-    removeRefreshToken(),
-    removeSessionCookie(),
-  ]);
+  return clearAuth();
 }
-

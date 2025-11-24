@@ -14,7 +14,8 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api, API_CONFIG } from '../../services/api';
-import { createPost } from '../../api/posts';
+import { createPost, updatePost, deletePost, getPost, PostKind, PostCreateRequest } from '../../api/posts';
+import { createComment, deleteComment } from '../../api/comments';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -65,11 +66,17 @@ interface CompetitionEntry {
 
 const POST_KIND_CATEGORY_MAP: Record<string, string> = {
   EXERCISE: '운동',
-  FOOD: '식단',
-  DIET: '질문',
+  FOOD: '음식',
+  DIET: '식단',
 };
 
-const COMMUNITY_CATEGORY_ORDER = ['운동', '식단', '질문', '자유'];
+const CATEGORY_POST_KIND_MAP: Record<string, PostKind> = {
+  '운동': 'EXERCISE',
+  '음식': 'FOOD',
+  '식단': 'DIET',
+};
+
+const COMMUNITY_CATEGORY_ORDER = ['운동', '음식', '식단'];
 const COMMUNITY_CATEGORY_FILTERS = ['전체', ...COMMUNITY_CATEGORY_ORDER];
 
 const resolveImageUrl = (input?: string | null): string | null => {
@@ -184,11 +191,17 @@ const normalizePost = (raw: any, fallbackCategory?: string): Post => {
       ? createdAtDate.toISOString()
       : null;
 
-  const category =
+  let category =
     raw?.category ??
     POST_KIND_CATEGORY_MAP[raw?.postKind] ??
     fallbackCategory ??
     '운동';
+  
+  // 기존 '질문', '자유' 카테고리를 '식단'으로 통일 (DIET)
+  // (이전 버전에서 '질문'이 DIET였지만, 이제 '식단'이 DIET)
+  if (category === '질문' || category === '자유') {
+    category = '식단';
+  }
 
   const authorId =
     raw?.authorId ??
@@ -264,7 +277,7 @@ const enrichPostsWithDetails = async (posts: Post[]): Promise<Post[]> => {
           };
         }
       } catch (error) {
-        console.warn('⚠️ 게시글 상세 조회(날짜) 실패:', postId, error);
+        // 게시글 상세 조회 실패 시 무시
       }
       return null;
     })
@@ -333,16 +346,30 @@ export function Community() {
   const [competitionImages, setCompetitionImages] = useState<string[]>([]);
   const [postImages, setPostImages] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [showPostImageActionSheet, setShowPostImageActionSheet] = useState(false);
+  const [showEditPostImageActionSheet, setShowEditPostImageActionSheet] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<{ id: string; name: string } | null>(null);
   const [followers, setFollowers] = useState<Record<string, number>>({});
   const [followingUsers, setFollowingUsers] = useState<Record<string, boolean>>({});
   const [userProfileImages, setUserProfileImages] = useState<Record<string, string>>({});
-  const [currentUser, setCurrentUser] = useState<any>({ email: 'user@example.com', name: '사용자', height: 175, weight: 70 });
+  interface CurrentUser {
+    email?: string;
+    name?: string;
+    nickname?: string;
+    height?: number;
+    weight?: number;
+    profileImage?: string | null;
+    profileImageUrl?: string | null;
+    backendId?: number;
+    id?: number | string;
+  }
+  const [currentUser, setCurrentUser] = useState<CurrentUser>({ email: 'user@example.com', name: '사용자', height: 175, weight: 70 });
   const [userId, setUserId] = useState<string>('user@example.com');
+  const [myPostIds, setMyPostIds] = useState<Set<string>>(new Set()); // 현재 사용자가 작성한 게시글 ID 목록
   const [showEditPostModal, setShowEditPostModal] = useState(false);
   const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [editPostData, setEditPostData] = useState({ title: '', content: '' });
+  const [editPostImages, setEditPostImages] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [filteredPosts, setFilteredPosts] = useState<Post[]>([]);
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<string>('전체');
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
@@ -373,6 +400,40 @@ export function Community() {
     loadProfileImages();
   }, [posts]);
 
+  // 게시글 목록 업데이트 시 내 게시글 ID 추출
+  useEffect(() => {
+    (async () => {
+      if (!userId || userId === 'user@example.com' || posts.length === 0) return;
+      
+      try {
+        const myPostsKey = `myPosts_${userId}`;
+        const existingMyPosts = await AsyncStorage.getItem(myPostsKey);
+        const myPosts = existingMyPosts ? JSON.parse(existingMyPosts) : [];
+        const myPostSet = new Set(myPosts);
+        
+        // 현재 사용자의 닉네임과 일치하는 게시글 찾기
+        const currentUserNickname = currentUser.nickname || currentUser.name;
+        const newMyPosts = posts
+          .filter(post => 
+            // 이미 내 게시글 목록에 있거나
+            myPostSet.has(post.id) ||
+            // 작성자가 현재 사용자와 일치하는 경우
+            (currentUserNickname && post.author === currentUserNickname)
+          )
+          .map(post => post.id);
+        
+        if (newMyPosts.length > 0) {
+          const updatedMyPosts = Array.from(new Set([...myPosts, ...newMyPosts]));
+          await AsyncStorage.setItem(myPostsKey, JSON.stringify(updatedMyPosts));
+          setMyPostIds(new Set(updatedMyPosts));
+          console.log('[Community] 내 게시글 ID 목록 업데이트:', updatedMyPosts.length);
+        }
+      } catch (error) {
+        console.log('[Community] 내 게시글 ID 목록 업데이트 실패:', error);
+      }
+    })();
+  }, [posts, userId, currentUser.nickname, currentUser.name]);
+
   useEffect(() => {
     // 실제 사용자 정보 로드
     (async () => {
@@ -381,10 +442,29 @@ export function Community() {
         if (saved) {
           const parsed = JSON.parse(saved);
           setCurrentUser(parsed);
-          setUserId(parsed.email || parsed.id || 'user@example.com');
+          
+          // userId 설정: 백엔드 ID가 있으면 사용, 없으면 이메일 사용
+          // authorId 비교를 위해 백엔드 ID를 문자열로 저장
+          const userIdValue = parsed.backendId 
+            ? String(parsed.backendId) 
+            : (parsed.id ? String(parsed.id) : (parsed.email || 'user@example.com'));
+          setUserId(userIdValue);
+          
+          // 현재 사용자가 작성한 게시글 ID 목록 로드
+          try {
+            const myPostsKey = `myPosts_${userIdValue}`;
+            const existingMyPosts = await AsyncStorage.getItem(myPostsKey);
+            if (existingMyPosts) {
+              const myPosts = JSON.parse(existingMyPosts);
+              setMyPostIds(new Set(myPosts));
+              console.log('[Community] 내 게시글 ID 목록 로드:', Array.from(myPosts));
+            }
+          } catch (error) {
+            console.log('[Community] 내 게시글 ID 목록 로드 실패:', error);
+          }
         }
       } catch (error) {
-        console.error('Failed to load current user:', error);
+        // 사용자 정보 로드 실패 시 무시
       }
     })();
   }, []);
@@ -431,7 +511,7 @@ export function Community() {
         ]);
 
         const allPosts: Post[] = [];
-        const categoryMap = ['운동', '식단', '질문'];
+        const categoryMap = ['운동', '음식', '식단'];
 
         [exerciseRes, foodRes, dietRes].forEach((res, index) => {
           if (res.success && Array.isArray(res.data)) {
@@ -463,7 +543,6 @@ export function Community() {
         const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
         if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
       } catch (error) {
-        console.error('Failed to load data:', error);
         try {
           const savedPosts = await AsyncStorage.getItem('communityPosts');
           if (savedPosts && isMounted) {
@@ -476,7 +555,7 @@ export function Community() {
           const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
           if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
         } catch (fallbackError) {
-          console.error('Failed to load from local storage:', fallbackError);
+          // 로컬 저장소 로드 실패 시 무시
         }
       } finally {
         if (isMounted) {
@@ -511,11 +590,15 @@ export function Community() {
                 .map((url: string) => resolveImageUrl(url))
                 .filter((url): url is string => Boolean(url))
             : selectedPost.imageUrls;
+          // 백엔드 PostResponse에 authorId가 없으므로, 게시글 작성 시 저장한 정보 사용
+          // 또는 게시글 목록에서 가져온 authorId 사용 (목록에도 없지만 변환 시 'unknown'으로 설정됨)
+          // 임시 해결책: 게시글 작성자의 닉네임과 현재 사용자의 닉네임 비교
           const updatedPost: Post = {
             ...selectedPost,  // 기존 데이터 유지
             title: postData.title || selectedPost.title,
             content: postData.content || selectedPost.content,
             author: postData.authorName || selectedPost.author,
+            // authorId는 업데이트하지 않음 (백엔드에서 반환하지 않음)
             authorProfileImage:
               resolveImageUrl(postData.authorProfileImageUrl) || selectedPost.authorProfileImage,
             likes: postData.likeCount || selectedPost.likes,
@@ -545,29 +628,16 @@ export function Community() {
       }
       
       if (res.success && Array.isArray(res.data)) {
-        // 디버깅: 백엔드 응답 확인
-        console.log('📦 CommentResponse 데이터:', JSON.stringify(res.data, null, 2));
-        
         // 백엔드 응답 구조 변환: CommentResponse → Comment
-        // CommentResponse 필드: comment, createAt, likeCount, unLikeCount, imageUrl
         const transformedComments = res.data.map((comment: any, index: number) => {
-          // CommentResponse의 필드명 확인: comment (내용), imageUrl (이미지 URL)
           const rawImageUrl = comment.imageUrl || comment.image?.url || comment.image?.imageUrl || null;
           const commentContent = comment.comment || comment.content || '';
-          
-          console.log(`📝 댓글 ${index}:`, {
-            content: commentContent,
-            imageUrl: rawImageUrl,
-            hasImageUrl: !!rawImageUrl,
-            fullComment: comment
-          });
           
           // CommentInfo에서 content로 매핑 시도
           let matchedCommentInfo: any = null;
           let matchedCommentId: string | null = null;
           
           if (commentInfosMap.size > 0) {
-            // content로 매핑 (정확한 매칭)
             for (const [id, info] of commentInfosMap.entries()) {
               if (info.content === commentContent || info.content?.trim() === commentContent?.trim()) {
                 matchedCommentInfo = info;
@@ -575,7 +645,6 @@ export function Community() {
                 break;
               }
             }
-            // 매핑 실패 시 index로 매핑 (순서 기반)
             if (!matchedCommentInfo && index < commentInfosMap.size) {
               const infoArray = Array.from(commentInfosMap.entries());
               const [id, info] = infoArray[index];
@@ -584,15 +653,9 @@ export function Community() {
             }
           }
           
-          // 이미지 URL 처리 - rawImageUrl이 있으면 반드시 resolveImageUrl 적용
           const resolvedImageUrl = rawImageUrl ? resolveImageUrl(rawImageUrl) : null;
-          console.log(`🖼️ 이미지 URL 처리 [${index}]:`, {
-            raw: rawImageUrl,
-            resolved: resolvedImageUrl,
-            willShow: !!resolvedImageUrl
-          });
           
-          const finalComment = {
+          return {
             id: matchedCommentId || String(comment.commentId || comment.id || `temp_${Date.now()}_${index}`),
             postId: postId,
             author: matchedCommentInfo?.author || comment.authorName || '익명',
@@ -600,58 +663,35 @@ export function Community() {
             content: matchedCommentInfo?.content || commentContent,
             time: matchedCommentInfo?.time || formatPostDate(comment.createAt || comment.createdAt || new Date()),
             likes: matchedCommentInfo?.likes || comment.likeCount || 0,
-            imageUrl: resolvedImageUrl, // 이미지 URL 저장
+            imageUrl: resolvedImageUrl,
           };
-          
-          console.log(`✅ 최종 댓글 [${index}]:`, {
-            id: finalComment.id,
-            content: finalComment.content.substring(0, 20) + '...',
-            hasImage: !!finalComment.imageUrl,
-            imageUrl: finalComment.imageUrl
-          });
-          
-          return finalComment;
         });
         
-        // CommentInfo가 있지만 CommentResponse에 없는 경우 추가 (이미지 없는 댓글)
-        // content로 매핑하여 중복 제거
         if (commentInfosMap.size > 0) {
           const usedContents = new Set(transformedComments.map(c => c.content?.trim()));
           
           commentInfosMap.forEach((info, commentId) => {
-            // 이미 매핑된 content가 아니면 추가 (이미지 없는 댓글)
             if (!usedContents.has(info.content?.trim())) {
               transformedComments.push({
                 id: commentId,
                 postId: postId,
                 ...info,
-                imageUrl: null, // CommentInfo에는 이미지가 없음
+                imageUrl: null,
               });
               usedContents.add(info.content?.trim());
             }
           });
         }
         
-        // ID 중복 제거 (같은 ID를 가진 댓글이 있으면 최신 것만 유지)
         const uniqueComments = new Map<string, Comment>();
         transformedComments.forEach(comment => {
           const existing = uniqueComments.get(comment.id);
-          // 이미지가 있는 댓글이 우선순위가 높음
           if (!existing || (comment.imageUrl && !existing.imageUrl)) {
             uniqueComments.set(comment.id, comment);
           }
         });
         
-        const finalComments = Array.from(uniqueComments.values());
-        
-        console.log('🎯 최종 댓글 목록:', finalComments.map(c => ({
-          id: c.id,
-          content: c.content.substring(0, 20) + '...',
-          hasImage: !!c.imageUrl,
-          imageUrl: c.imageUrl
-        })));
-        
-        setComments(finalComments);
+        setComments(Array.from(uniqueComments.values()));
       } else if (commentInfosMap.size > 0) {
         // CommentResponse 조회 실패 시 CommentInfo만 사용
         const transformedComments = Array.from(commentInfosMap.entries()).map(([commentId, info]) => ({
@@ -677,7 +717,6 @@ export function Community() {
         }
       }
     } catch (error) {
-      console.warn('댓글 로드 실패:', error);
       // 로컬 저장소에서 댓글 가져오기
       const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
       if (savedComments) {
@@ -700,74 +739,40 @@ export function Community() {
       return;
     }
 
-    // 백엔드에 댓글 추가 (postId는 Long 타입이므로 number로 변환)
     try {
-      let res;
-      
-      // 백엔드가 @RequestPart를 사용하므로 항상 FormData로 전송
-      const formData = new FormData();
-      formData.append('commentRequest', JSON.stringify({
-        postId: Number(selectedPost.id),
-        content: newComment.trim() || ' ',
-      }));
-      
-      // 이미지가 있으면 file 추가
-      if (commentImage) {
-        formData.append('file', {
-          uri: commentImage.uri,
-          name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
-          type: commentImage.mimeType || 'image/jpeg',
-        } as any);
-      }
-      
-      // FormData를 사용할 때는 Content-Type을 설정하지 않음
-      // axios가 자동으로 boundary를 포함한 올바른 Content-Type을 설정함
-      res = await api.post(API_CONFIG.ENDPOINTS.CREATE_COMMENT, formData, {
-        headers: {
-          'Content-Type': undefined, // React Native에서 FormData 사용 시 자동 설정되도록
-        },
-      });
+      const commentFile = commentImage ? {
+        uri: commentImage.uri,
+        name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
+        type: commentImage.mimeType || 'image/jpeg',
+      } : undefined;
 
-      if (res.success) {
-        // 백엔드 성공 시 댓글 목록 새로고침
-        await loadComments(selectedPost.id);
-        
-        // 게시글 상세 정보도 새로고침하여 댓글 수 업데이트
-        try {
-          const postDetailRes = await api.get<any>(`${API_CONFIG.ENDPOINTS.GET_POST_DETAIL}/${selectedPost.id}`);
-          if (postDetailRes.success && postDetailRes.data) {
-            const postData = postDetailRes.data;
-            const updatedPost: Post = {
-              ...selectedPost,
-              comments: postData.commentCount || selectedPost.comments + 1,
-            };
-            setSelectedPost(updatedPost);
-            
-            // 목록에서도 업데이트
-            const updatedPosts = posts.map(post => {
-              if (post.id === selectedPost.id) {
-                return updatedPost;
-              }
-              return post;
-            });
-            setPosts(updatedPosts);
-            await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-          } else {
-            // 게시글 상세 조회 실패 시 로컬에서 댓글 수만 증가
-            const updatedPosts = posts.map(post => {
-              if (post.id === selectedPost.id) {
-                return { ...post, comments: (post.comments || 0) + 1 };
-              }
-              return post;
-            });
-            setPosts(updatedPosts);
-            setSelectedPost({
-              ...selectedPost,
-              comments: (selectedPost.comments || 0) + 1,
-            });
-          }
-        } catch (refreshError) {
-          // 게시글 상세 조회 실패 시 로컬에서 댓글 수만 증가
+      await createComment({
+        postId: Number(selectedPost.id),
+        content: newComment.trim() || '',
+      }, commentFile);
+      await loadComments(selectedPost.id);
+      
+      // 게시글 상세 정보 업데이트 (댓글 수 반영)
+      try {
+        const { getPost } = await import('../../api/posts');
+        const postDetail = await getPost(Number(selectedPost.id));
+        if (postDetail) {
+          const updatedPost: Post = {
+            ...selectedPost,
+            comments: postDetail.commentCount || selectedPost.comments + 1,
+          };
+          setSelectedPost(updatedPost);
+          
+          const updatedPosts = posts.map(post => {
+            if (post.id === selectedPost.id) {
+              return updatedPost;
+            }
+            return post;
+          });
+          setPosts(updatedPosts);
+          await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
+        } else {
+          // 404 에러로 null 반환된 경우, 로컬에서 댓글 수 증가
           const updatedPosts = posts.map(post => {
             if (post.id === selectedPost.id) {
               return { ...post, comments: (post.comments || 0) + 1 };
@@ -780,25 +785,29 @@ export function Community() {
             comments: (selectedPost.comments || 0) + 1,
           });
         }
-        
-        setNewComment('');
-        setCommentImage(null);
-        Alert.alert('완료', '댓글이 작성되었습니다.');
-      } else {
-        const errorMsg = res.error || '댓글 작성에 실패했습니다.';
-        if (errorMsg.includes('인증') || errorMsg.includes('OAuth2')) {
-          Alert.alert('알림', '댓글 작성은 OAuth2 소셜 로그인(카카오/네이버)이 필요합니다.');
-        } else {
-          Alert.alert('오류', errorMsg);
-        }
+      } catch (refreshError: any) {
+        // 에러 발생 시에도 로컬에서 댓글 수 증가
+        console.warn('게시글 상세 조회 실패, 로컬에서 댓글 수 증가:', refreshError?.message);
+        const updatedPosts = posts.map(post => {
+          if (post.id === selectedPost.id) {
+            return { ...post, comments: (post.comments || 0) + 1 };
+          }
+          return post;
+        });
+        setPosts(updatedPosts);
+        setSelectedPost({
+          ...selectedPost,
+          comments: (selectedPost.comments || 0) + 1,
+        });
       }
+      
+      setNewComment('');
+      setCommentImage(null);
+      Alert.alert('완료', '댓글이 작성되었습니다.');
     } catch (error: any) {
-      const errorMsg = error.message || '댓글 작성에 실패했습니다.';
-      if (errorMsg.includes('인증') || errorMsg.includes('OAuth2')) {
-        Alert.alert('알림', '댓글 작성은 OAuth2 소셜 로그인(카카오/네이버)이 필요합니다.');
-      } else {
-        Alert.alert('오류', errorMsg);
-      }
+      const errorMsg = String(error?.message || '댓글 작성에 실패했습니다.');
+      console.log('[Community] 댓글 작성 실패:', errorMsg);
+      // 에러는 로그에만 기록하고 사용자에게는 표시하지 않음
     }
   };
 
@@ -812,27 +821,22 @@ export function Community() {
           text: '삭제',
           style: 'destructive',
           onPress: async () => {
-            try {
-              const res = await api.post(`${API_CONFIG.ENDPOINTS.DELETE_POST}/${postId}`, {});
-              if (res.success) {
-                // 성공 시 목록에서 제거
-                const updatedPosts = posts.filter(p => p.id !== postId);
-                setPosts(updatedPosts);
-                await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-                
-                // 상세 모달이 열려있으면 닫기
-                if (selectedPost && selectedPost.id === postId) {
-                  setShowPostDetailModal(false);
-                  setSelectedPost(null);
-                }
-                
-                Alert.alert('완료', '게시글이 삭제되었습니다.');
-              } else {
-                Alert.alert('오류', res.error || '게시글 삭제에 실패했습니다.');
-              }
-            } catch (error: any) {
-              Alert.alert('오류', error.message || '게시글 삭제에 실패했습니다.');
-            }
+    try {
+      await deletePost(Number(postId));
+      const updatedPosts = posts.filter(p => p.id !== postId);
+      setPosts(updatedPosts);
+      await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
+      
+      if (selectedPost && selectedPost.id === postId) {
+        setShowPostDetailModal(false);
+        setSelectedPost(null);
+      }
+      
+      console.log('[Community] 게시글 삭제 완료');
+    } catch (error: any) {
+      console.log('[Community] 게시글 삭제 실패:', error.message || '게시글 삭제에 실패했습니다.');
+      Alert.alert('알림', error.message || '게시글 삭제에 실패했습니다.');
+    }
           },
         },
       ]
@@ -846,45 +850,81 @@ export function Community() {
     }
 
     try {
-      const res = await api.post(API_CONFIG.ENDPOINTS.UPDATE_POST, {
-        postId: Number(editingPost.id),
+      // 기존 게시글의 postKind를 category에서 가져오기
+      // category: '운동' -> postKind: 'EXERCISE'
+      // category: '음식' -> postKind: 'FOOD'
+      // category: '식단' -> postKind: 'DIET'
+      let existingPostKind: PostKind = CATEGORY_POST_KIND_MAP[editingPost.category] || 'DIET';
+      
+      // 만약 category에서 매핑되지 않으면 API로 확인 시도 (fallback)
+      if (existingPostKind === 'DIET' && !CATEGORY_POST_KIND_MAP[editingPost.category]) {
+        try {
+          const postDetail = await getPost(Number(editingPost.id));
+          if (postDetail?.postKind) {
+            existingPostKind = postDetail.postKind;
+          }
+        } catch (error) {
+          // 상세 조회 실패 시 기본값 사용
+          console.log('[Community] 게시글 상세 조회 실패 (postKind 가져오기), category에서 추정:', editingPost.category, '->', existingPostKind);
+        }
+      }
+
+      console.log('[UPDATE_POST] 게시글 수정 시작:', {
+        id: editingPost.id,
         title: editPostData.title.trim(),
         content: editPostData.content.trim(),
+        postKind: existingPostKind,
+        filesCount: editPostImages.length,
       });
 
-      if (res.success) {
-        // 성공 시 목록 업데이트
-        const updatedPosts = posts.map(post => {
-          if (post.id === editingPost.id) {
-            return {
-              ...post,
-              title: editPostData.title.trim(),
-              content: editPostData.content.trim(),
-            };
-          }
-          return post;
-        });
-        setPosts(updatedPosts);
-        await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-        
-        // 상세 모달에서도 업데이트
-        if (selectedPost && selectedPost.id === editingPost.id) {
-          setSelectedPost({
-            ...selectedPost,
+      // 파일 업로드 처리
+      const uploadFiles = editPostImages.length > 0 
+        ? editPostImages.map((asset, index) => ({
+            uri: asset.uri,
+            name: asset.fileName || `post-${Date.now()}-${index}.${asset.mimeType?.split('/')?.[1] ?? 'jpg'}`,
+            type: asset.mimeType || 'image/jpeg',
+          }))
+        : undefined;
+
+      await updatePost({
+        id: Number(editingPost.id),
+        title: editPostData.title.trim(),
+        content: editPostData.content.trim(),
+        postKind: existingPostKind,
+      }, uploadFiles);
+
+      const updatedPosts = posts.map(post => {
+        if (post.id === editingPost.id) {
+          return {
+            ...post,
             title: editPostData.title.trim(),
             content: editPostData.content.trim(),
-          });
+          };
         }
-        
-        setShowEditPostModal(false);
-        setEditingPost(null);
-        setEditPostData({ title: '', content: '' });
-        Alert.alert('완료', '게시글이 수정되었습니다.');
-      } else {
-        Alert.alert('오류', res.error || '게시글 수정에 실패했습니다.');
+        return post;
+      });
+      setPosts(updatedPosts);
+      await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
+      
+      if (selectedPost && selectedPost.id === editingPost.id) {
+        setSelectedPost({
+          ...selectedPost,
+          title: editPostData.title.trim(),
+          content: editPostData.content.trim(),
+        });
       }
+      
+      setShowEditPostModal(false);
+      setEditingPost(null);
+      setEditPostData({ title: '', content: '' });
+      setEditPostImages([]);
+      console.log('[Community] 게시글 수정 완료');
+      
+      // 게시글 목록 새로고침
+      await refreshPosts();
     } catch (error: any) {
-      Alert.alert('오류', error.message || '게시글 수정에 실패했습니다.');
+      console.log('[Community] 게시글 수정 실패:', error.message || '게시글 수정에 실패했습니다.');
+      Alert.alert('알림', error.message || '게시글 수정에 실패했습니다.');
     }
   };
 
@@ -899,29 +939,25 @@ export function Community() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const res = await api.post(API_CONFIG.ENDPOINTS.DELETE_COMMENT, {
+              await deleteComment({
                 commentId: Number(commentId),
                 postId: Number(postId),
               });
 
-              if (res.success) {
-                // 성공 시 댓글 목록 새로고침
-                await loadComments(postId);
-                
-                // 게시글의 댓글 수 업데이트
-                const updatedPosts = posts.map(post => {
-                  if (post.id === postId) {
-                    return { ...post, comments: Math.max((post.comments || 1) - 1, 0) };
-                  }
-                  return post;
-                });
-                setPosts(updatedPosts);
-                await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-              } else {
-                Alert.alert('오류', res.error || '댓글 삭제에 실패했습니다.');
-              }
+              await loadComments(postId);
+              
+              const updatedPosts = posts.map(post => {
+                if (post.id === postId) {
+                  return { ...post, comments: Math.max((post.comments || 0) - 1, 0) };
+                }
+                return post;
+              });
+              setPosts(updatedPosts);
+              await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
             } catch (error: any) {
-              Alert.alert('오류', error.message || '댓글 삭제에 실패했습니다.');
+              const errorMsg = error?.message || '댓글 삭제에 실패했습니다.';
+              console.log('[Community] 댓글 삭제 실패:', errorMsg);
+              Alert.alert('알림', errorMsg);
             }
           },
         },
@@ -961,7 +997,10 @@ export function Community() {
         ? `${API_CONFIG.ENDPOINTS.UNLIKE_POST}/${postId}`
         : `${API_CONFIG.ENDPOINTS.LIKE_POST}/${postId}`;
       await api.post(endpoint, {}); 
-    } catch {}
+    } catch (error: any) {
+      // 좋아요 API 실패 시 로컬 상태는 이미 업데이트되었으므로 에러만 로깅
+      console.log('[Community] 좋아요 API 실패:', error?.message || '좋아요 처리에 실패했습니다.');
+    }
   };
 
   const handleVote = async (entryId: string) => {
@@ -1001,10 +1040,12 @@ export function Community() {
     };
 
     const classes = weightClasses[category];
+    const userHeight = currentUser.height ?? 0;
+    const userWeight = currentUser.weight ?? 0;
     return classes.some(c =>
-      currentUser.height >= c.heightMin &&
-      currentUser.height <= c.heightMax &&
-      currentUser.weight <= c.weightLimit
+      userHeight >= c.heightMin &&
+      userHeight <= c.heightMax &&
+      userWeight <= c.weightLimit
     );
   };
 
@@ -1059,7 +1100,6 @@ export function Community() {
         setPostImages(prev => [...prev, result.assets[0]]);
       }
     } catch (error) {
-      console.error('갤러리 열기 실패:', error);
       Alert.alert('알림', '갤러리를 여는 중 문제가 발생했습니다.');
     }
   }, [postImages]);
@@ -1086,13 +1126,70 @@ export function Community() {
         setPostImages(prev => [...prev, result.assets[0]]);
       }
     } catch (error) {
-      console.error('카메라 실행 실패:', error);
       Alert.alert('알림', '카메라를 여는 중 문제가 발생했습니다.');
     }
   }, [postImages]);
 
   const removePostImage = useCallback((index: number) => {
     setPostImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // 수정용 이미지 함수
+  const pickEditPostImageFromLibrary = useCallback(async () => {
+    if (editPostImages.length >= 3) {
+      Alert.alert('알림', '사진은 최대 3장까지 업로드할 수 있습니다.');
+      return;
+    }
+
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '사진 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setEditPostImages(prev => [...prev, result.assets[0]]);
+      }
+    } catch (error) {
+      Alert.alert('알림', '갤러리를 여는 중 문제가 발생했습니다.');
+    }
+  }, [editPostImages]);
+
+  const pickEditPostImageFromCamera = useCallback(async () => {
+    if (editPostImages.length >= 3) {
+      Alert.alert('알림', '사진은 최대 3장까지 업로드할 수 있습니다.');
+      return;
+    }
+
+    try {
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('알림', '카메라 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets?.[0]) {
+        setEditPostImages(prev => [...prev, result.assets[0]]);
+      }
+    } catch (error) {
+      Alert.alert('알림', '카메라를 여는 중 문제가 발생했습니다.');
+    }
+  }, [editPostImages]);
+
+  const removeEditPostImage = useCallback((index: number) => {
+    setEditPostImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
   const pickCommentImageFromLibrary = useCallback(async () => {
@@ -1113,7 +1210,6 @@ export function Community() {
         setCommentImage(result.assets[0]);
       }
     } catch (error) {
-      console.error('갤러리 열기 실패:', error);
       Alert.alert('알림', '갤러리를 여는 중 문제가 발생했습니다.');
     }
   }, []);
@@ -1135,7 +1231,6 @@ export function Community() {
         setCommentImage(result.assets[0]);
       }
     } catch (error) {
-      console.error('카메라 실행 실패:', error);
       Alert.alert('알림', '카메라를 여는 중 문제가 발생했습니다.');
     }
   }, []);
@@ -1157,18 +1252,21 @@ export function Community() {
   const refreshPosts = useCallback(async () => {
     setLoadingPosts(true);
     try {
-      const [exerciseRes, foodRes, dietRes] = await Promise.all([
-        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=EXERCISE`),
-        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=FOOD`),
-        api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=DIET`),
+      // getPosts API 함수 사용 (404/500 에러 자동 처리)
+      const { getPosts } = await import('../../api/posts');
+      const [exercisePosts, foodPosts, dietPosts] = await Promise.all([
+        getPosts('EXERCISE'),
+        getPosts('FOOD'),
+        getPosts('DIET'),
       ]);
 
       const allPosts: Post[] = [];
-      const categoryMap = ['운동', '식단', '질문'];
+      const categoryMap = ['운동', '음식', '식단'];
+      const postArrays = [exercisePosts, foodPosts, dietPosts];
 
-      [exerciseRes, foodRes, dietRes].forEach((res, index) => {
-        if (res.success && Array.isArray(res.data)) {
-          const transformedPosts = res.data.map((post: any) =>
+      postArrays.forEach((postArray, index) => {
+        if (Array.isArray(postArray) && postArray.length > 0) {
+          const transformedPosts = postArray.map((post: any) =>
             normalizePost(post, categoryMap[index])
           );
           allPosts.push(...transformedPosts);
@@ -1180,6 +1278,7 @@ export function Community() {
         setPosts(enrichedPosts);
         await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
       } else {
+        // API에서 게시글이 없으면 로컬 캐시 사용
         const savedPosts = await AsyncStorage.getItem('communityPosts');
         if (savedPosts) {
           const parsed: any[] = JSON.parse(savedPosts);
@@ -1193,8 +1292,8 @@ export function Community() {
       const currentUserId = userId;
       const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
       if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
-    } catch (error) {
-      console.error('Failed to load data:', error);
+    } catch (error: any) {
+      console.warn('게시글 새로고침 실패, 로컬 캐시 사용:', error?.message);
       try {
         const savedPosts = await AsyncStorage.getItem('communityPosts');
         if (savedPosts) {
@@ -1207,7 +1306,7 @@ export function Community() {
         const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
         if (savedFollowing) setFollowing(JSON.parse(savedFollowing));
       } catch (fallbackError) {
-        console.error('Failed to load from local storage:', fallbackError);
+        // 로컬 저장소 로드 실패 시 무시
       }
     } finally {
       setLoadingPosts(false);
@@ -1550,7 +1649,10 @@ export function Community() {
                       ]}
                       onPress={() => handleVote(entry.id)}
                     >
-                      <Text style={styles.voteButtonText}>
+                      <Text style={[
+                        styles.voteButtonText,
+                        entry.votedBy.includes(userId) && styles.voteButtonTextActive
+                      ]}>
                         {entry.votedBy.includes(userId) ? '❤️' : '🤍'} {entry.votes}
                       </Text>
                     </TouchableOpacity>
@@ -1593,6 +1695,44 @@ export function Community() {
             <TouchableOpacity
               style={[styles.actionSheetButton, styles.actionSheetCancelButton]}
               onPress={() => setShowPostImageActionSheet(false)}
+            >
+              <Text style={[styles.actionSheetButtonText, styles.actionSheetCancelButtonText]}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit Post Image Action Sheet */}
+      <Modal
+        visible={showEditPostImageActionSheet}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowEditPostImageActionSheet(false)}
+      >
+        <View style={styles.actionSheetOverlay}>
+          <View style={styles.actionSheetContainer}>
+            <Text style={styles.actionSheetTitle}>사진 업로드</Text>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowEditPostImageActionSheet(false);
+                pickEditPostImageFromCamera();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>📷 카메라로 촬영</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionSheetButton}
+              onPress={() => {
+                setShowEditPostImageActionSheet(false);
+                pickEditPostImageFromLibrary();
+              }}
+            >
+              <Text style={styles.actionSheetButtonText}>🖼 갤러리에서 선택</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionSheetButton, styles.actionSheetCancelButton]}
+              onPress={() => setShowEditPostImageActionSheet(false)}
             >
               <Text style={[styles.actionSheetButtonText, styles.actionSheetCancelButtonText]}>취소</Text>
             </TouchableOpacity>
@@ -1651,7 +1791,7 @@ export function Community() {
 
             <Text style={styles.modalLabel}>카테고리</Text>
             <View style={styles.modalRow}>
-              {['운동', '식단', '질문', '자유'].map(cat => (
+              {['운동', '음식', '식단'].map(cat => (
                 <TouchableOpacity
                   key={cat}
                   style={[
@@ -1724,27 +1864,62 @@ export function Community() {
               <Button
                 title="작성하기"
                 onPress={async () => {
+                  // 카테고리 검증
+                  if (!newPost.category || !['운동', '음식', '식단'].includes(newPost.category)) {
+                    Alert.alert('알림', '카테고리를 선택해주세요');
+                    return;
+                  }
+                  
                   if (!newPost.title.trim()) {
                     Alert.alert('알림', '제목을 입력해주세요');
                     return;
                   }
-                  if (!newPost.content.trim() && postImages.length === 0) {
+                  
+                  // 내용 검증: 이미지가 있으면 내용이 비어있어도 허용
+                  const trimmedContent = (newPost.content || '').trim();
+                  if (!trimmedContent && postImages.length === 0) {
                     Alert.alert('알림', '내용 또는 이미지를 입력해주세요');
                     return;
                   }
 
-                  // 백엔드 매핑 (운동 -> EXERCISE, 식단 -> FOOD, 질문/자유 -> DIET)
-                  const categoryMap: { [key: string]: string } = {
+                  // WebView 가용성 확인
+                  const { WebViewManager } = await import('../../utils/webViewManager');
+                  if (!WebViewManager.isAvailable()) {
+                    Alert.alert('오류', 'WebView가 필요합니다. 로그인 후 다시 시도해주세요.');
+                    return;
+                  }
+
+                  // 백엔드 PostKind enum: EXERCISE, FOOD, DIET, COMPETITION
+                  // EXERCISE: 운동
+                  // FOOD: 음식 (레시피, 음식 추천)
+                  // DIET: 식단 (식단 관리, 다이어트)
+                  // 프론트엔드 카테고리 -> 백엔드 PostKind 매핑
+                  const categoryMap: { [key: string]: PostKind } = {
                     '운동': 'EXERCISE',
-                    '식단': 'FOOD',
-                    '질문': 'DIET',
-                    '자유': 'DIET'
+                    '음식': 'FOOD',
+                    '식단': 'DIET',
+                    'COMPETITION': 'COMPETITION', // 혹시 필요할 경우 대비
                   };
 
-                  const payload = {
-                    postKind: categoryMap[newPost.category] || 'DIET',
+                  const selectedPostKind = categoryMap[newPost.category] || 'DIET';
+                  
+                  // 디버깅: 선택된 카테고리와 매핑된 PostKind 확인
+                  console.log('[CREATE_POST] category:', newPost.category, '-> postKind:', selectedPostKind);
+
+                  // content가 비어있으면 기본값 설정 (백엔드 @NotBlank 검증 통과)
+                  const finalContent = trimmedContent || '내용 없음'; // 빈 문자열이면 기본값 설정
+                  
+                  console.log('[CREATE_POST] content 처리:', {
+                    original: newPost.content,
+                    trimmed: trimmedContent,
+                    final: finalContent,
+                    isEmpty: !trimmedContent,
+                  });
+                  
+                  const payload: PostCreateRequest = {
+                    postKind: selectedPostKind,
                     title: newPost.title.trim(),
-                    content: newPost.content.trim() || ' ',
+                    content: finalContent, // 항상 값이 있도록 보장
                   };
 
                   const uploadFiles = postImages.map((asset, index) => ({
@@ -1756,52 +1931,134 @@ export function Community() {
                   }));
 
                   try {
-                    await createPost(payload, uploadFiles);
-                    await refreshPosts();
-                    closeWriteModal();
-                    Alert.alert('완료', '게시글이 작성되었습니다');
-                    return;
-                  } catch (error) {
-                    console.error('Failed to create post:', error);
-                    Alert.alert('알림', '서버에 게시글을 저장하지 못했습니다. 로컬에 임시로 저장합니다.');
+                    console.log('[CREATE_POST] 게시글 작성 시작:', { 
+                      title: payload.title, 
+                      content: payload.content,
+                      contentLength: payload.content?.length || 0,
+                      postKind: payload.postKind, 
+                      filesCount: uploadFiles.length 
+                    });
+                    console.log('[CREATE_POST] payload 전체:', JSON.stringify(payload));
+                    
+                    // 파일이 있을 때만 2단계로 처리 (백엔드 문제 우회)
+                    if (uploadFiles.length > 0) {
+                      // 1단계: 파일 없이 게시글 먼저 생성
+                      await createPost(payload, undefined);
+                      console.log('[CREATE_POST] 게시글 생성 성공 (파일 제외)');
+                      
+                      // 2단계: DB 반영 시간 확보를 위한 짧은 지연
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      
+                      // 3단계: 해당 postKind의 게시글만 직접 조회해서 최신 게시글 찾기
+                      const { getPosts } = await import('../../api/posts');
+                      let latestPost: any = null;
+                      
+                      try {
+                        const kindPosts = await getPosts(payload.postKind);
+                        
+                        // 조회한 게시글을 normalizePost로 변환
+                        const categoryMap: Record<PostKind, string> = {
+                          'EXERCISE': '운동',
+                          'FOOD': '음식',
+                          'DIET': '식단',
+                          'COMPETITION': '대회',
+                        };
+                        const normalizedPosts = kindPosts.map((post: any) =>
+                          normalizePost(post, categoryMap[payload.postKind])
+                        );
+                        
+                        // 최신 게시글 중에서 방금 생성한 게시글 찾기 (제목, 내용, 작성자로 매칭)
+                        latestPost = normalizedPosts.find(p => 
+                          p.title === payload.title.trim() &&
+                          p.content === payload.content.trim() &&
+                          p.authorId === userId
+                        );
+                      } catch (error) {
+                        console.log('[CREATE_POST] 게시글 목록 조회 실패:', error);
+                      }
+                      
+                      if (latestPost && latestPost.id) {
+                        // 4단계: updatePost로 파일 추가
+                        await updatePost({
+                          id: Number(latestPost.id),
+                          title: payload.title.trim(),
+                          content: payload.content.trim(),
+                          postKind: payload.postKind,
+                        }, uploadFiles);
+                        console.log('[CREATE_POST] 파일 추가 완료');
+                        
+                        // 파일 추가 후 전체 목록 새로고침
+                        await refreshPosts();
+                        
+                        // 성공 시 모달 닫기 및 폼 초기화
+                        closeWriteModal();
+                        setNewPost({ title: '', content: '', category: '운동' });
+                        setPostImages([]);
+                        Alert.alert('완료', '게시글이 작성되었습니다.');
+                      } else {
+                        console.warn('[CREATE_POST] 최신 게시글을 찾을 수 없어 파일 추가 실패', {
+                          searchedTitle: payload.title.trim(),
+                          searchedContent: payload.content.trim(),
+                        });
+                        Alert.alert('알림', '게시글은 생성되었지만 파일 추가에 실패했습니다. 게시글 수정 기능으로 파일을 추가해주세요.');
+                        // 게시글 목록 새로고침
+                        await refreshPosts();
+                        
+                        // 게시글은 생성되었으므로 모달 닫기
+                        closeWriteModal();
+                        setNewPost({ title: '', content: '', category: '운동' });
+                        setPostImages([]);
+                      }
+                    } else {
+                      // 파일이 없으면 그냥 생성
+                      await createPost(payload, undefined);
+                      console.log('[CREATE_POST] 게시글 작성 성공');
+                      
+                      // 게시글 목록 새로고침
+                      await refreshPosts();
+                      
+                      // 성공 시 모달 닫기 및 폼 초기화
+                      closeWriteModal();
+                      setNewPost({ title: '', content: '', category: '운동' });
+                      setPostImages([]);
+                      Alert.alert('완료', '게시글이 작성되었습니다.');
+                    }
+                  } catch (error: any) {
+                    const errorMessage = error?.message || '서버에 게시글을 저장하지 못했습니다.';
+                    console.log('[CREATE_POST_ERROR]', error);
+                    console.log('[CREATE_POST_ERROR_DETAIL]', error?.response?.status, error?.response?.data, error?.response?.config?.headers);
+                    console.log('[CREATE_POST] 에러 전체:', JSON.stringify(error, null, 2));
+                    console.log('[CREATE_POST] 게시글 작성 실패:', errorMessage);
+                    
+                    // 에러 타입에 따른 메시지 개선
+                    let userMessage = errorMessage;
+                    if (errorMessage.includes('500') || errorMessage.includes('Internal Server Error')) {
+                      userMessage = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
+                    } else if (errorMessage.includes('400') || errorMessage.includes('Bad Request')) {
+                      userMessage = '입력한 내용을 확인해주세요.\n\n' + errorMessage;
+                    } else if (errorMessage.includes('네트워크') || errorMessage.includes('Network')) {
+                      userMessage = '네트워크 연결을 확인해주세요.';
+                    } else if (errorMessage.includes('WebView')) {
+                      userMessage = 'WebView가 필요합니다. 로그인 후 다시 시도해주세요.';
+                    }
+                    
+                    // 사용자에게 에러 메시지 표시 (모달은 닫지 않음 - 사용자가 수정할 수 있도록)
+                    Alert.alert(
+                      '게시글 작성 실패',
+                      userMessage,
+                      [{ 
+                        text: '확인', 
+                        style: 'default',
+                        onPress: () => {
+                          // 모달은 닫지 않고 사용자가 수정할 수 있도록 유지
+                        }
+                      }]
+                    );
+                    
+                    // 서버 저장 실패 시 로컬 fallback 제거 (500 에러 등 서버 오류는 저장하지 않음)
+                    // 게시글은 서버에 저장된 경우에만 표시
+                    // 모달은 닫지 않음 - 사용자가 내용을 수정하고 다시 시도할 수 있도록
                   }
-
-                  const createdAtIso = new Date().toISOString();
-                  const profileImageUrl =
-                    currentUser.profileImage ||
-                    currentUser.profileImageUrl ||
-                    userProfileImages[userId] ||
-                    null;
-                  const fallbackImageUris = uploadFiles.map(file => file.uri);
-                  const post: Post = {
-                    id: Date.now().toString(),
-                    author: currentUser.name,
-                    authorId: userId,
-                    authorProfileImage: profileImageUrl,
-                    category: newPost.category,
-                    title: newPost.title,
-                    content: newPost.content,
-                    likes: 0,
-                    likedBy: [],
-                    comments: 0,
-                    createdAt: createdAtIso,
-                    time: formatPostDate(createdAtIso),
-                    imageUrls: fallbackImageUris,
-                    thumbnail: fallbackImageUris[0] || null,
-                  };
-                  setPosts(prev => {
-                    const next = [post, ...prev];
-                    AsyncStorage.setItem('communityPosts', JSON.stringify(next));
-                    return next;
-                  });
-                  if (profileImageUrl) {
-                    setUserProfileImages(prev => ({
-                      ...prev,
-                      [userId]: profileImageUrl,
-                    }));
-                  }
-                  closeWriteModal();
-                  Alert.alert('완료', '게시글이 로컬에 저장되었습니다');
                 }}
               />
             </View>
@@ -1829,7 +2086,14 @@ export function Community() {
                 <View style={styles.postDetailHeader}>
                   <Text style={styles.postDetailTitle}>게시글</Text>
                   <View style={styles.postDetailHeaderActions}>
-                    {selectedPost.authorId === userId && (
+                    {/* 수정/삭제 버튼: 
+                        1. authorId가 userId와 일치하거나
+                        2. authorName이 현재 사용자의 nickname과 일치하거나
+                        3. 로컬에 저장된 내 게시글 ID 목록에 포함된 경우 표시 */}
+                    {((selectedPost.authorId === userId) || 
+                      (selectedPost.author && currentUser.nickname && selectedPost.author === currentUser.nickname) ||
+                      (selectedPost.authorId !== 'unknown' && String(selectedPost.authorId) === String(userId)) ||
+                      (myPostIds.has(selectedPost.id))) && (
                       <>
                         <TouchableOpacity
                           onPress={() => {
@@ -1838,6 +2102,9 @@ export function Community() {
                               title: selectedPost.title,
                               content: selectedPost.content,
                             });
+                            // 기존 이미지 로드 - URL을 ImagePicker.Asset 형식으로 변환하지 않고 빈 배열로 시작
+                            // (기존 이미지는 수정 시 유지되지만, 새로 추가한 이미지만 전송)
+                            setEditPostImages([]);
                             setShowEditPostModal(true);
                           }}
                           style={styles.editButton}
@@ -1977,11 +2244,11 @@ export function Community() {
                                 source={{ uri: comment.imageUrl }} 
                                 style={styles.commentImage}
                                 resizeMode="cover"
-                                onError={(error) => {
-                                  console.warn('❌ 댓글 이미지 로드 실패:', error, comment.imageUrl);
+                                onError={() => {
+                                  // 이미지 로드 실패 시 무시
                                 }}
                                 onLoad={() => {
-                                  console.log('✅ 댓글 이미지 로드 성공:', comment.imageUrl);
+                                  // 이미지 로드 성공
                                 }}
                               />
                             </TouchableOpacity>
@@ -2059,8 +2326,8 @@ export function Community() {
 
               <Text style={styles.modalLabel}>나의 정보</Text>
               <View style={styles.userInfo}>
-                <Text>키: {currentUser.height}cm</Text>
-                <Text>몸무게: {currentUser.weight}kg</Text>
+                <Text>키: {currentUser.height ?? 0}cm</Text>
+                <Text>몸무게: {currentUser.weight ?? 0}kg</Text>
                 {canParticipate('classic') ? (
                   <Text style={styles.eligibleText}>✅ 출전 가능</Text>
                 ) : (
@@ -2130,6 +2397,7 @@ export function Community() {
           setShowEditPostModal(false);
           setEditingPost(null);
           setEditPostData({ title: '', content: '' });
+          setEditPostImages([]);
         }}
       >
         <View style={styles.modalOverlay}>
@@ -2154,6 +2422,32 @@ export function Community() {
               onChangeText={text => setEditPostData({ ...editPostData, content: text })}
             />
 
+            <Text style={styles.modalLabel}>사진 첨부 (최대 3장)</Text>
+            <View style={styles.imageGrid}>
+              {editPostImages.map((image, index) => (
+                <View key={`${image.uri}-${index}`} style={styles.imageWrapper}>
+                  <Image source={{ uri: image.uri }} style={styles.uploadedImage} />
+                  <TouchableOpacity
+                    style={styles.removeImageButton}
+                    onPress={() => removeEditPostImage(index)}
+                  >
+                    <Text style={styles.removeImageText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {editPostImages.length < 3 && (
+                <TouchableOpacity
+                  style={styles.addImageButton}
+                  onPress={() => setShowEditPostImageActionSheet(true)}
+                >
+                  <Text style={styles.addImageText}>+</Text>
+                  <Text style={styles.addImageLabel}>
+                    {editPostImages.length}/3
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <View style={styles.modalButtons}>
               <Button
                 title="취소"
@@ -2161,6 +2455,7 @@ export function Community() {
                   setShowEditPostModal(false);
                   setEditingPost(null);
                   setEditPostData({ title: '', content: '' });
+                  setEditPostImages([]);
                 }}
               />
               <Button
@@ -2270,93 +2565,129 @@ export function Community() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f8fafc',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingTop: 50,
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   writeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#007AFF',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#6366f1',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
   writeButtonText: {
-    fontSize: 20,
+    fontSize: 22,
   },
   tabs: {
     flexDirection: 'row',
     backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingTop: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#e2e8f0',
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    borderBottomWidth: 2,
+    borderBottomWidth: 3,
     borderBottomColor: 'transparent',
+    marginHorizontal: 4,
   },
   tabActive: {
-    borderBottomColor: '#007AFF',
+    borderBottomColor: '#6366f1',
   },
   tabText: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   tabTextActive: {
-    color: '#007AFF',
-    fontWeight: '600',
+    color: '#6366f1',
+    fontWeight: '700',
   },
   content: {
     flex: 1,
     padding: 16,
   },
   scrollViewContent: {
-    paddingBottom: 80, // 탭바 높이 + 여유 공간
+    paddingBottom: 80,
   },
   searchInput: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    marginBottom: 20,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    fontSize: 15,
+    color: '#0f172a',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   categoryFilterRow: {
-    marginBottom: 16,
+    marginBottom: 20,
     paddingHorizontal: 4,
   },
   categoryFilterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#d4d4d8',
-    backgroundColor: '#fff',
-    marginRight: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    marginRight: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   categoryFilterChipActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   categoryFilterChipText: {
     fontSize: 13,
-    color: '#6b7280',
-    fontWeight: '500',
+    color: '#64748b',
+    fontWeight: '600',
   },
   categoryFilterChipTextActive: {
-    color: '#fff',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   categorySection: {
     marginBottom: 24,
@@ -2378,140 +2709,177 @@ const styles = StyleSheet.create({
     color: '#9E9E9E',
   },
   postsEmptyState: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    paddingVertical: 40,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    paddingVertical: 60,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   postsEmptyText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#555',
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#0f172a',
     marginBottom: 8,
   },
   postsEmptySubtext: {
-    fontSize: 13,
-    color: '#9E9E9E',
+    fontSize: 14,
+    color: '#94a3b8',
   },
   postsLoadingState: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    paddingVertical: 32,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    paddingVertical: 48,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   postsLoadingText: {
-    marginTop: 8,
-    fontSize: 14,
-    color: '#6b7280',
+    marginTop: 12,
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   postCard: {
-    marginBottom: 12,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   postHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
   },
   postAuthorContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
   },
   postAuthorAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
   },
   postAuthorAvatarPlaceholder: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#e5e7eb',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e2e8f0',
     justifyContent: 'center',
     alignItems: 'center',
   },
   postAuthorAvatarText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#64748b',
   },
   postAuthor: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
   },
   postTime: {
     fontSize: 12,
-    color: '#666',
+    color: '#94a3b8',
+    marginTop: 2,
   },
   postTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 10,
+    color: '#0f172a',
+    lineHeight: 24,
   },
   postContent: {
     fontSize: 14,
-    color: '#666',
-    marginBottom: 12,
+    color: '#475569',
+    marginBottom: 14,
+    lineHeight: 20,
   },
   postImage: {
     width: '100%',
-    height: 200,
-    borderRadius: 8,
-    marginBottom: 12,
+    height: 220,
+    borderRadius: 16,
+    marginBottom: 14,
   },
   postImageWrapper: {
     position: 'relative',
-    marginBottom: 12,
+    marginBottom: 14,
+    borderRadius: 16,
+    overflow: 'hidden',
   },
   postImageBadge: {
     position: 'absolute',
-    right: 8,
-    bottom: 8,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backdropFilter: 'blur(10px)',
   },
   postImageBadgeText: {
     color: '#fff',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   postFooter: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 24,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
   },
   likeButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
   },
   likeIcon: {
     fontSize: 20,
   },
   likeCount: {
     fontSize: 14,
-    color: '#666',
+    color: '#64748b',
+    fontWeight: '600',
   },
   commentButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
   },
   commentIcon: {
     fontSize: 20,
   },
   commentCount: {
     fontSize: 14,
-    color: '#666',
+    color: '#64748b',
+    fontWeight: '600',
   },
   competitionCard: {
     marginBottom: 16,
@@ -2538,22 +2906,30 @@ const styles = StyleSheet.create({
   },
   competitionTab: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
     alignItems: 'center',
+    backgroundColor: '#ffffff',
   },
   competitionTabActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   competitionTabText: {
     fontSize: 14,
-    color: '#333',
+    color: '#64748b',
+    fontWeight: '600',
   },
   competitionTabTextActive: {
-    color: '#fff',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   entryCard: {
     marginBottom: 16,
@@ -2596,38 +2972,56 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   voteButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
     alignItems: 'center',
+    backgroundColor: '#ffffff',
   },
   voteButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   voteButtonText: {
     fontSize: 14,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  voteButtonTextActive: {
+    color: '#ffffff',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 20,
+    backgroundColor: '#ffffff',
+    borderRadius: 24,
+    padding: 24,
     width: '90%',
     maxWidth: 500,
     minWidth: 300,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 30,
+    elevation: 10,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 20,
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   modalLabel: {
     fontSize: 14,
@@ -2654,17 +3048,18 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   modalInput: {
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    marginBottom: 16,
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    marginBottom: 20,
     fontSize: 16,
-    color: '#000',
+    color: '#0f172a',
   },
   modalTextArea: {
-    height: 120,
+    height: 140,
     textAlignVertical: 'top',
   },
   modalRow: {
@@ -2674,26 +3069,35 @@ const styles = StyleSheet.create({
   },
   categoryButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   categoryButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   categoryButtonText: {
     fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
+    color: '#64748b',
+    fontWeight: '600',
   },
   categoryButtonTextActive: {
-    color: '#fff',
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   postDetailModalContent: {
     backgroundColor: '#fff',
@@ -2770,61 +3174,78 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
   },
   commentItem: {
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    padding: 16,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   commentHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   commentAuthor: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
   },
   commentTime: {
     fontSize: 12,
-    color: '#999',
+    color: '#94a3b8',
+    marginTop: 2,
   },
   commentContent: {
     fontSize: 14,
-    color: '#666',
+    color: '#475569',
     lineHeight: 20,
   },
   commentInputContainer: {
-    padding: 16,
+    padding: 20,
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    borderTopColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 5,
   },
   commentInput: {
     flex: 1,
-    backgroundColor: '#f9f9f9',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: '#f8fafc',
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
     maxHeight: 100,
-    fontSize: 14,
-    color: '#000',
+    fontSize: 15,
+    color: '#0f172a',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
   },
   commentSendButton: {
-    backgroundColor: '#007AFF',
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    backgroundColor: '#6366f1',
+    borderRadius: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   commentSendButtonDisabled: {
-    backgroundColor: '#ccc',
+    backgroundColor: '#cbd5e1',
+    shadowOpacity: 0,
+    elevation: 0,
   },
   commentSendButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   modalScrollContent: {
     maxHeight: '80%',
@@ -2868,23 +3289,24 @@ const styles = StyleSheet.create({
   addImageButton: {
     width: '30%',
     aspectRatio: 1,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 2,
-    borderColor: '#007AFF',
+    borderColor: '#6366f1',
     borderStyle: 'dashed',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f9f9f9',
+    backgroundColor: '#f8fafc',
   },
   addImageText: {
-    fontSize: 32,
-    color: '#007AFF',
+    fontSize: 36,
+    color: '#6366f1',
     fontWeight: '300',
   },
   addImageLabel: {
     fontSize: 12,
-    color: '#007AFF',
+    color: '#6366f1',
     marginTop: 4,
+    fontWeight: '600',
   },
   actionSheetOverlay: {
     flex: 1,
@@ -2955,40 +3377,50 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   editButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#007AFF',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   editButtonText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   deleteButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#FF3B30',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#ef4444',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   deleteButtonText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   commentHeaderLeft: {
     flex: 1,
   },
   commentDeleteButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-    backgroundColor: '#FF3B30',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: '#ef4444',
   },
   commentDeleteButtonText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   commentImageWrapper: {
     width: '100%',

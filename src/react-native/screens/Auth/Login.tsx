@@ -11,10 +11,9 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Linking,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { WebView, WebViewNavigation } from 'react-native-webview';
+import { WebView } from 'react-native-webview';
 import { Buffer } from 'buffer';
 import { API_CONFIG } from '../../../config/api';
 import { api } from '../../../services/api';
@@ -46,12 +45,10 @@ function decodeJwtPayload(token: string | null | undefined): Record<string, any>
   if (!token || typeof token !== 'string') {
     return null;
   }
-
   const segments = token.split('.');
   if (segments.length < 2) {
     return null;
   }
-
   try {
     const base = segments[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = base.padEnd(Math.ceil(base.length / 4) * 4, '=');
@@ -97,9 +94,11 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
   const [verifyingRecoveryCode, setVerifyingRecoveryCode] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
+
   const webViewRef = useRef<WebView | null>(null);
   const currentProviderRef = useRef<'kakao' | 'naver' | null>(null);
   const handledAuthRef = useRef(false);
+  const postMessageTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -146,163 +145,286 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     setShowRecoveryModal(true);
   }, [resetRecoveryFlow]);
 
-  const ensureHealthInfoFlow = useCallback(async (overrideKey?: string) => {
+  const ensureHealthInfoFlow = useCallback(
+    async (overrideKey?: string) => {
     const keyToCheck = overrideKey ?? healthFlagKey;
     try {
+        console.log('[Login] 헬스 정보 플래그 확인:', keyToCheck);
       const initialized = await AsyncStorage.getItem(keyToCheck);
+        console.log('[Login] 헬스 정보 초기화 여부:', initialized);
       if (initialized === '1') {
+          console.log('[Login] 헬스 정보 이미 초기화됨');
+          
+          // 헬스 정보 플래그가 있지만 currentUser에 헬스 정보가 없을 수 있음
+          // 이 경우 백엔드에서 가져오거나, 사용자에게 프로필 수정을 안내해야 함
+          try {
+            const currentUserRaw = await AsyncStorage.getItem('currentUser');
+            if (currentUserRaw) {
+              const currentUser = JSON.parse(currentUserRaw);
+              const hasHealthInfo = !!(currentUser?.age || currentUser?.gender || currentUser?.healthInfo);
+              console.log('[Login] currentUser 헬스 정보 확인:', {
+                hasAge: !!currentUser?.age,
+                hasGender: !!currentUser?.gender,
+                hasHealthInfo: !!currentUser?.healthInfo,
+                hasAnyHealthInfo: hasHealthInfo,
+              });
+              
+              if (!hasHealthInfo) {
+                console.warn('[Login] 헬스 정보 플래그는 있지만 currentUser에 헬스 정보가 없음 - 백엔드에서 가져올 수 없으므로 사용자에게 프로필 수정을 안내해야 함');
+                // TODO: 백엔드에서 현재 로그인한 사용자의 전체 프로필을 가져오는 API가 추가되면 여기서 호출
+              }
+            }
+          } catch (e) {
+            console.warn('[Login] currentUser 헬스 정보 확인 실패:', e);
+          }
+          
+          console.log('[Login] onLoggedIn 호출');
+        console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
         onLoggedIn();
+        console.log('[Login] onLoggedIn 호출 완료');
         return;
       }
+        console.log('[Login] 헬스 정보 미초기화, 모달 표시');
       setShowHealthModal(true);
     } catch (error) {
-      console.error('헬스 정보 초기화 여부 확인 실패:', error);
+        console.error('[Login] 헬스 정보 초기화 여부 확인 실패:', error);
+        // 에러 발생 시에도 로그인 완료 처리
+        console.log('[Login] 에러 발생으로 인한 onLoggedIn 호출');
+        console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
       onLoggedIn();
+        console.log('[Login] onLoggedIn 호출 완료 (에러 케이스)');
     }
-  }, [healthFlagKey, onLoggedIn]);
+    },
+    [healthFlagKey, onLoggedIn],
+  );
 
   const handleAuthSuccess = useCallback(
-    async (accessToken: string | null, refreshToken: string | null) => {
+    async (accessToken: string, refreshToken: string | null) => {
       if (handledAuthRef.current) {
+        console.log('[Login] 이미 처리된 로그인 요청, 무시');
         return;
       }
       handledAuthRef.current = true;
 
       try {
+        console.log('[Login] ========== handleAuthSuccess 시작 ==========');
+        console.log('[Login] accessToken 존재:', !!accessToken);
+        console.log('[Login] refreshToken 존재:', !!refreshToken);
+
         setShowWebView(false);
         setWebViewLoading(false);
-        // 로딩 상태는 유지 (App.tsx에서 홈화면 준비 후 닫음)
-        // setLoading(false); // 주석 처리 - App.tsx에서 관리
+        setLoading(false);
 
-        let normalizedAccess: string | null = null;
-
-        if (accessToken) {
-          normalizedAccess = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
-          await api.setAuthToken(normalizedAccess);
-          await AsyncStorage.setItem('@accessToken', normalizedAccess.replace(/^Bearer\s+/i, ''));
+        if (!accessToken || accessToken.trim().length === 0) {
+          throw new Error('액세스 토큰이 없습니다');
         }
+
+        const cleanToken = accessToken.replace(/^Bearer\s+/i, '');
+        const bearerToken = `Bearer ${cleanToken}`;
+
+        console.log('[Login] 토큰 저장 시작');
+        await api.setAuthToken(bearerToken);
+        await AsyncStorage.setItem('@accessToken', cleanToken);
+        console.log('[Login] accessToken 저장 완료');
+
         if (refreshToken) {
           await AsyncStorage.setItem('@refreshToken', refreshToken);
           await AsyncStorage.setItem('refreshToken', refreshToken);
+          console.log('[Login] refreshToken 저장 완료');
         }
 
-        const existingUserRaw = await AsyncStorage.getItem('currentUser');
-        const existingUser = existingUserRaw ? JSON.parse(existingUserRaw) : {};
+        console.log('[Login] JWT 디코딩 시작');
+        const payload = decodeJwtPayload(cleanToken);
+        console.log('[Login] JWT payload:', payload);
 
-        const payload = decodeJwtPayload(accessToken);
-        const emailFromToken =
-          payload?.email ??
-          existingUser?.email ??
-          null;
+        const emailFromToken = payload?.email ?? null;
         const nameFromToken =
           payload?.nickname ??
           payload?.name ??
-          existingUser?.name ??
           (emailFromToken ? emailFromToken.split('@')[0] : null);
 
         const provider = currentProviderRef.current;
+        
+        // 기존 currentUser에서 헬스 정보 보존
+        let existingUser = null;
+        try {
+          const existingUserRaw = await AsyncStorage.getItem('currentUser');
+          if (existingUserRaw) {
+            existingUser = JSON.parse(existingUserRaw);
+            console.log('[Login] 기존 currentUser 발견:', {
+              hasAge: !!existingUser?.age,
+              hasGender: !!existingUser?.gender,
+              hasHealthInfo: !!existingUser?.healthInfo,
+            });
+          }
+        } catch (e) {
+          console.warn('[Login] 기존 currentUser 읽기 실패:', e);
+        }
+        
         const userSnapshot = {
-          ...existingUser,
           email: emailFromToken,
           name: nameFromToken,
-          nickname: payload?.nickname ?? existingUser?.nickname ?? nameFromToken,
+          nickname: payload?.nickname ?? nameFromToken,
           provider,
-          role: payload?.role ?? existingUser?.role ?? null,
+          role: payload?.role ?? null,
           loginAt: Date.now(),
+          // 기존 헬스 정보 보존 (있으면)
+          age: existingUser?.age || null,
+          gender: existingUser?.gender || null,
+          healthInfo: existingUser?.healthInfo || null,
         };
 
+        console.log('[Login] currentUser 저장:', {
+          ...userSnapshot,
+          hasAge: !!userSnapshot.age,
+          hasGender: !!userSnapshot.gender,
+          hasHealthInfo: !!userSnapshot.healthInfo,
+        });
         await AsyncStorage.setItem('currentUser', JSON.stringify(userSnapshot));
+        console.log('[Login] currentUser 저장 완료');
 
         const healthKey = makeHealthFlagKey(emailFromToken);
         setHealthFlagKey(healthKey);
         currentProviderRef.current = null;
 
-        try {
-          const recommendations = await getFoodRecommendations();
+        // 식단 추천은 비동기로 처리하고 타임아웃 설정
+        const foodPromise = (async () => {
+          try {
+            console.log('[Login] 식단 추천 요청 시작');
+            const recommendations = await Promise.race([
+              getFoodRecommendations(),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('식단 추천 요청 타임아웃')), 10000),
+              ),
+            ]);
           const normalized = normalizeFoodRecommendations(recommendations);
           await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
+            console.log('[Login] 식단 추천 저장 완료');
         } catch (foodError) {
-          console.error('식단 추천 요청 실패:', foodError);
-          Alert.alert(
-            '식단 추천 준비 중',
-            '헬스 정보는 저장되었지만 식단 추천 생성에 실패했습니다. 잠시 후 다시 시도하거나 개발팀에 문의해주세요.',
-          );
-        }
+            console.error('[Login] 식단 추천 요청 실패:', foodError);
+            // 식단 추천 실패해도 로그인은 계속 진행
+          }
+        })();
 
-        await ensureHealthInfoFlow(healthKey);
+        // 로그인 완료 먼저 처리 (헬스 정보는 나중에)
+        console.log('[Login] 로그인 완료, onLoggedIn 호출');
+        onLoggedIn();
+        console.log('[Login] onLoggedIn 호출 완료');
+        
+        // 헬스 정보 플로우는 비동기로 처리 (로그인 완료 후)
+        setTimeout(async () => {
+          try {
+            console.log('[Login] 헬스 정보 플로우 시작');
+            await ensureHealthInfoFlow(healthKey);
+          } catch (healthError) {
+            console.error('[Login] 헬스 정보 플로우 실패:', healthError);
+            // 헬스 정보 실패해도 이미 로그인은 완료됨
+          }
+        }, 100);
+        
+        // 식단 추천은 백그라운드에서 계속 진행
+        foodPromise.catch(() => {});
+
+        console.log('[Login] ========== handleAuthSuccess 완료 ==========');
       } catch (error) {
+        console.error('[Login] ========== handleAuthSuccess 실패 ==========');
+        console.error('[Login] 에러:', error);
         handledAuthRef.current = false;
-        throw error;
+        setShowWebView(false);
+        setWebViewLoading(false);
+        setLoading(false);
+        Alert.alert(
+          '로그인 실패',
+          `로그인 처리 중 오류가 발생했습니다: ${
+            error instanceof Error ? error.message : '알 수 없는 오류'
+          }`,
+        );
       }
     },
-    [ensureHealthInfoFlow],
+    [onLoggedIn],
   );
 
-  const handleDeepLinkUrl = useCallback(
-    (incomingUrl: string | null | undefined) => {
-      if (!incomingUrl || typeof incomingUrl !== 'string') {
-        return false;
-      }
+  const handleSocialLogin = (provider: 'kakao' | 'naver') => {
+    console.log('[Login] 소셜 로그인 시작:', provider);
+    handledAuthRef.current = false;
+    
+    // 이전 타임아웃 정리
+    if (postMessageTimeoutRef.current) {
+      clearTimeout(postMessageTimeoutRef.current);
+      postMessageTimeoutRef.current = null;
+    }
+    
+    setCurrentProvider(provider);
+    currentProviderRef.current = provider;
+    setLoading(true);
+    setWebViewUrl(`${API_CONFIG.BASE_URL}/oauth2/authorization/${provider}`);
+    setShowWebView(true);
+    setWebViewLoading(true);
+  };
 
-      if (!incomingUrl.startsWith('dailyboost://')) {
-        return false;
-      }
-
+  const handleWebViewMessage = useCallback(
+    async (event: any) => {
       try {
-        const [, queryString = ''] = incomingUrl.split('?');
-        if (!queryString) {
-          return false;
+        const rawData = event.nativeEvent.data;
+        console.log('[Login] ========== WebView 메시지 수신 ==========');
+        console.log('[Login] rawData:', rawData);
+        console.log('[Login] rawData 타입:', typeof rawData);
+
+        if (!rawData || typeof rawData !== 'string') {
+          console.log('[Login] rawData가 문자열이 아님, 무시');
+          return;
         }
 
-        const params = queryString.split('&').reduce<Record<string, string>>((acc, part) => {
-          const [rawKey, rawValue] = part.split('=');
-          if (!rawKey) {
-            return acc;
+        let data: any;
+        try {
+          data = JSON.parse(rawData);
+          console.log('[Login] 파싱 성공');
+        } catch (parseError) {
+          console.warn('[Login] JSON 파싱 실패:', parseError);
+          console.warn('[Login] rawData 내용:', rawData.substring(0, 200));
+          return;
+        }
+
+        console.log('[Login] 파싱된 데이터:', JSON.stringify(data, null, 2));
+        console.log('[Login] data.type:', data.type);
+
+        // 백엔드가 보내는 토큰 메시지 처리
+        // 백엔드: { type: 'token', jwtToken: access, refreshToken: refresh }
+        if (data.type === 'token') {
+          // 타임아웃 제거
+          if (postMessageTimeoutRef.current) {
+            clearTimeout(postMessageTimeoutRef.current);
+            postMessageTimeoutRef.current = null;
           }
-          const key = decodeURIComponent(rawKey);
-          const value = decodeURIComponent(rawValue ?? '');
-          acc[key] = value;
-          return acc;
-        }, {});
 
-        const access = params.access ?? null;
-        const refresh = params.refresh ?? null;
+          const accessToken = data.jwtToken ? String(data.jwtToken).trim() : null;
+          const refreshToken = data.refreshToken ? String(data.refreshToken).trim() : null;
 
-        if (!access && !refresh) {
-          return false;
+          if (!accessToken) {
+            console.error('[Login] jwtToken이 없습니다. data:', data);
+            Alert.alert('로그인 오류', '토큰을 받지 못했습니다.');
+            return;
+          }
+
+          console.log('[Login] ========== 토큰 수신 성공 ==========');
+          console.log('[Login] accessToken 길이:', accessToken.length);
+          console.log('[Login] accessToken 앞 20자:', accessToken.substring(0, 20));
+          console.log('[Login] refreshToken:', refreshToken ? '있음' : '없음');
+
+          await handleAuthSuccess(accessToken, refreshToken);
+          return;
         }
 
-        handleAuthSuccess(access, refresh).catch((error) => {
-          console.error('딥링크 인증 처리 실패:', error);
-        });
-        return true;
+        console.log('[Login] 처리할 수 없는 메시지 타입:', data.type);
+        console.log('[Login] 전체 데이터:', JSON.stringify(data, null, 2));
       } catch (error) {
-        console.error('딥링크 URL 파싱 실패:', error);
-        return false;
+        console.error('[Login] ========== WebView 메시지 처리 실패 ==========');
+        console.error('[Login] 에러:', error);
+        Alert.alert('오류', `로그인 메시지 처리 중 오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`);
       }
     },
     [handleAuthSuccess],
   );
-
-  useEffect(() => {
-    const subscription = Linking.addEventListener('url', ({ url }) => {
-      handleDeepLinkUrl(url);
-    });
-
-    Linking.getInitialURL()
-      .then((initialUrl) => {
-        if (initialUrl) {
-          handleDeepLinkUrl(initialUrl);
-        }
-      })
-      .catch((error) => {
-        console.error('초기 URL 처리 실패:', error);
-      });
-
-    return () => {
-      subscription.remove();
-    };
-  }, [handleDeepLinkUrl]);
 
   const goalButtons = useMemo(
     () =>
@@ -345,8 +467,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
 
     try {
       setSubmittingHealth(true);
-      
-      // 1. 헬스 정보 초기 등록 (initInfo)
       const initResult = await UserService.initUserInfo({
         healthInfo: {
           height: heightValue,
@@ -361,7 +481,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         return;
       }
 
-      // 2. 나이와 성별 정보 업데이트 (update)
       const updateResult = await UserService.updateProfile({
         age: ageValue,
         gender: healthGender,
@@ -374,7 +493,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
 
       if (!updateResult.success) {
         console.warn('나이/성별 업데이트 실패:', updateResult.error);
-        // initInfo는 성공했으므로 계속 진행
       }
 
       try {
@@ -385,30 +503,63 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         console.error('식단 추천 요청 실패:', foodError);
       }
 
-      try {
-        const currentUserRaw = await AsyncStorage.getItem('currentUser');
-        if (currentUserRaw) {
-          const parsed = JSON.parse(currentUserRaw);
-          const updatedUser = {
-            ...parsed,
-            age: ageValue,
-            gender: healthGender,
-            healthInfo: {
-              height: heightValue,
-              weight: weightValue,
-              goal: healthGoal,
-            },
-          };
-          await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      // currentUser 업데이트 - 여러 번 시도하여 확실히 저장
+      let updateSuccess = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const currentUserRaw = await AsyncStorage.getItem('currentUser');
+          if (currentUserRaw) {
+            const parsed = JSON.parse(currentUserRaw);
+            const updatedUser = {
+              ...parsed,
+              age: ageValue,
+              gender: healthGender,
+              healthInfo: {
+                height: heightValue,
+                weight: weightValue,
+                goal: healthGoal,
+              },
+            };
+            console.log(`[Login] 헬스 정보로 currentUser 업데이트 시도 ${attempt + 1}/3:`, {
+              before: { age: parsed?.age, gender: parsed?.gender, hasHealthInfo: !!parsed?.healthInfo },
+              after: { age: updatedUser.age, gender: updatedUser.gender, healthInfo: updatedUser.healthInfo },
+            });
+            await AsyncStorage.setItem('currentUser', JSON.stringify(updatedUser));
+            
+            // 저장 확인
+            const verifyRaw = await AsyncStorage.getItem('currentUser');
+            const verify = verifyRaw ? JSON.parse(verifyRaw) : null;
+            if (verify?.age === ageValue && verify?.gender === healthGender && verify?.healthInfo?.height === heightValue) {
+              console.log('[Login] currentUser 업데이트 확인 성공');
+              updateSuccess = true;
+              break;
+            } else {
+              console.warn(`[Login] currentUser 업데이트 확인 실패 (시도 ${attempt + 1}/3)`);
+              await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기 후 재시도
+            }
+          } else {
+            console.warn('[Login] currentUser가 없어 헬스 정보를 저장할 수 없습니다');
+            break;
+          }
+        } catch (userUpdateError) {
+          console.error(`[Login] 헬스 정보 사용자 저장 실패 (시도 ${attempt + 1}/3):`, userUpdateError);
+          if (attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기 후 재시도
+          }
         }
-      } catch (userUpdateError) {
-        console.error('헬스 정보 사용자 저장 실패:', userUpdateError);
+      }
+      
+      if (!updateSuccess) {
+        console.error('[Login] currentUser 업데이트 최종 실패 - 사용자에게 프로필 수정을 안내해야 함');
       }
 
       await AsyncStorage.setItem(healthFlagKey, '1');
       setShowHealthModal(false);
       setSubmittingHealth(false);
+      console.log('[Login] 헬스 정보 제출 완료, onLoggedIn 호출');
+      console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
       onLoggedIn();
+      console.log('[Login] onLoggedIn 호출 완료 (헬스 정보 제출)');
     } catch (error) {
       console.error('헬스 정보 등록 실패:', error);
       Alert.alert('등록 실패', '헬스 정보를 저장하는 중 오류가 발생했습니다.');
@@ -431,7 +582,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         Alert.alert('전송 실패', response.error || '이메일 전송에 실패했습니다.');
         return;
       }
-      Alert.alert('이메일 전송', '입력한 이메일로 인증 코드를 전송했습니다. 5분 이내에 코드를 입력해주세요.');
+      Alert.alert(
+        '이메일 전송',
+        '입력한 이메일로 인증 코드를 전송했습니다. 5분 이내에 코드를 입력해주세요.',
+      );
       setRecoveryStep('code');
       setResendCountdown(30);
     } catch (error) {
@@ -463,14 +617,18 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         Alert.alert('복구 실패', response.error || '인증 코드가 일치하지 않거나 만료되었습니다.');
         return;
       }
-      Alert.alert('복구 완료', response.data?.message || '계정이 복구되었습니다. 다시 로그인해주세요.', [
+      Alert.alert(
+        '복구 완료',
+        response.data?.message || '계정이 복구되었습니다. 다시 로그인해주세요.',
+        [
         {
           text: '확인',
           onPress: () => {
             closeRecoveryModal();
           },
         },
-      ]);
+        ],
+      );
     } catch (error) {
       setVerifyingRecoveryCode(false);
       Alert.alert('복구 실패', '계정 복구 중 오류가 발생했습니다.');
@@ -481,16 +639,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     if (resendCountdown > 0 || sendingRecoveryEmail) return;
     handleSendRecoveryEmail();
   }, [handleSendRecoveryEmail, resendCountdown, sendingRecoveryEmail]);
-
-  const handleSocialLogin = (provider: 'kakao' | 'naver') => {
-    handledAuthRef.current = false;
-    setCurrentProvider(provider);
-    currentProviderRef.current = provider;
-    setLoading(true);
-    setWebViewUrl(`${API_CONFIG.BASE_URL}/oauth2/authorization/${provider}`);
-    setShowWebView(true);
-    setWebViewLoading(true);
-  };
 
   const handleLocalLogin = async () => {
     if (!email || !password) {
@@ -505,15 +653,28 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         name: email.split('@')[0],
         id: `local_${Date.now()}`,
         provider: 'local',
+        role: null,
+        loginAt: Date.now(),
       };
+      
+      // 로컬 로그인용 더미 토큰 생성 (실제 인증은 아니지만 앱 내부에서 사용)
+      const tokenPayload = JSON.stringify({ email, provider: 'local', iat: Date.now() });
+      const encodedPayload = Buffer.from(tokenPayload).toString('base64');
+      const dummyToken = `local.${encodedPayload}.dummy`;
+      
       await AsyncStorage.setItem('currentUser', JSON.stringify(mockUser));
-      await AsyncStorage.removeItem('@accessToken');
+      await AsyncStorage.setItem('@accessToken', dummyToken);
+      await api.setAuthToken(`Bearer ${dummyToken}`);
       await AsyncStorage.removeItem('@refreshToken');
       await AsyncStorage.removeItem('refreshToken');
       await AsyncStorage.removeItem('@sessionCookie');
       await AsyncStorage.removeItem('backend:session-cookie');
       await AsyncStorage.setItem(makeHealthFlagKey(email), '1');
+      
+      console.log('[Login] 로컬 로그인 완료');
+      console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
       onLoggedIn();
+      console.log('[Login] onLoggedIn 호출 완료 (로컬 로그인)');
     } catch (error) {
       console.error('로컬 로그인 실패:', error);
       Alert.alert('로그인 실패', '로그인 처리 중 오류가 발생했습니다.');
@@ -525,25 +686,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   const handleHealthModalClose = () => {
     Alert.alert('알림', '헬스 정보를 입력해야 다음 단계로 진행할 수 있습니다.');
   };
-
-  const handleWebViewMessage = useCallback(
-    async (event: any) => {
-      try {
-        const data = JSON.parse(event.nativeEvent.data || '{}');
-        const msgType = typeof data.type === 'string' ? data.type.toLowerCase() : undefined;
-
-        if (msgType === 'token' || typeof data.jwtToken === 'string') {
-          const access = typeof data.jwtToken === 'string' ? data.jwtToken.trim() : null;
-          const refresh = typeof data.refreshToken === 'string' ? data.refreshToken.trim() : null;
-          await handleAuthSuccess(access, refresh);
-          return;
-        }
-      } catch (error) {
-        console.error('WebView 메시지 처리 실패:', error);
-      }
-    },
-    [handleAuthSuccess],
-  );
 
   return (
     <>
@@ -582,10 +724,7 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.recoveryLinkWrapper}
-            onPress={openRecoveryModal}
-          >
+          <TouchableOpacity style={styles.recoveryLinkWrapper} onPress={openRecoveryModal}>
             <Text style={styles.recoveryLinkText}>계정을 복구하고 싶으신가요?</Text>
           </TouchableOpacity>
 
@@ -677,7 +816,8 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
                 <TouchableOpacity
                   style={[
                     styles.recoveryPrimaryButton,
-                    (verifyingRecoveryCode || recoveryCode.trim().length < 4) && styles.buttonDisabled,
+                    (verifyingRecoveryCode || recoveryCode.trim().length < 4) &&
+                      styles.buttonDisabled,
                   ]}
                   onPress={handleVerifyRecoveryCode}
                   disabled={verifyingRecoveryCode}
@@ -703,10 +843,7 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
               </>
             )}
 
-            <TouchableOpacity
-              style={styles.recoveryCloseButton}
-              onPress={closeRecoveryModal}
-            >
+            <TouchableOpacity style={styles.recoveryCloseButton} onPress={closeRecoveryModal}>
               <Text style={styles.recoveryCloseButtonText}>닫기</Text>
             </TouchableOpacity>
           </View>
@@ -840,6 +977,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         visible={showWebView}
         animationType="slide"
         onRequestClose={() => {
+          if (postMessageTimeoutRef.current) {
+            clearTimeout(postMessageTimeoutRef.current);
+            postMessageTimeoutRef.current = null;
+          }
           setShowWebView(false);
           setCurrentProvider(null);
           setWebViewLoading(false);
@@ -851,6 +992,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           <View style={styles.webViewHeader}>
             <TouchableOpacity
               onPress={() => {
+                if (postMessageTimeoutRef.current) {
+                  clearTimeout(postMessageTimeoutRef.current);
+                  postMessageTimeoutRef.current = null;
+                }
                 setShowWebView(false);
                 setCurrentProvider(null);
                 setWebViewLoading(false);
@@ -869,18 +1014,266 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
             sharedCookiesEnabled
             thirdPartyCookiesEnabled
             javaScriptEnabled
-            onShouldStartLoadWithRequest={(request) => {
-              if (handleDeepLinkUrl(request?.url)) {
+            onShouldStartLoadWithRequest={(request: any) => {
+              const url = request?.url || '';
+              
+              // 딥링크는 WebView에서 차단
+              if (url.startsWith('dailyboost://')) {
                 return false;
               }
+              
+              // OAuth 콜백 URL 감지 시 즉시 HTML 읽기 시도
+              if (url.includes('/login/oauth2/code/') && !handledAuthRef.current && webViewRef.current) {
+                setTimeout(() => {
+                  if (!handledAuthRef.current && webViewRef.current) {
+                    webViewRef.current.injectJavaScript(`
+                      (function() {
+                        try {
+                          var html = document.documentElement.innerHTML;
+                          var scripts = document.getElementsByTagName('script');
+                          
+                          for (var i = 0; i < scripts.length; i++) {
+                            var scriptContent = scripts[i].innerHTML || scripts[i].textContent || '';
+                            var accessMatch = scriptContent.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                            var refreshMatch = scriptContent.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                            
+                            if (accessMatch && accessMatch[1]) {
+                              var access = accessMatch[1];
+                              var refresh = refreshMatch && refreshMatch[1] ? refreshMatch[1] : null;
+                              
+                              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({
+                                  type: 'token',
+                                  jwtToken: access,
+                                  refreshToken: refresh
+                                }));
+                                return true;
+                              }
+                            }
+                          }
+                          
+                          var htmlAccessMatch = html.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                          var htmlRefreshMatch = html.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                          
+                          if (htmlAccessMatch && htmlAccessMatch[1]) {
+                            var access = htmlAccessMatch[1];
+                            var refresh = htmlRefreshMatch && htmlRefreshMatch[1] ? htmlRefreshMatch[1] : null;
+                            
+                            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                              window.ReactNativeWebView.postMessage(JSON.stringify({
+                                type: 'token',
+                                jwtToken: access,
+                                refreshToken: refresh
+                              }));
+                              return true;
+                            }
+                          }
+                          
+                          return false;
+                        } catch (e) {
+                          return false;
+                        }
+                      })();
+                      true;
+                    `);
+                  }
+                }, 100);
+              }
+              
               return true;
             }}
             onMessage={handleWebViewMessage}
-            onLoadStart={() => setWebViewLoading(true)}
-            onLoadEnd={() => setWebViewLoading(false)}
-            onNavigationStateChange={(navState: WebViewNavigation) => {
-              console.log('WebView Navigation:', navState.url);
+            onLoadStart={() => {
+              setWebViewLoading(true);
             }}
+            onLoadEnd={(event) => {
+              const url = event.nativeEvent.url;
+              setWebViewLoading(false);
+              
+              // 백엔드 도메인인 경우에만 토큰 추출 시도
+              const backendDomain = API_CONFIG.BASE_URL.replace(/^https?:\/\//, '');
+              if (url && url.includes(backendDomain) && !handledAuthRef.current) {
+                // HTML 읽기 (백엔드 페이지가 로드되었을 때)
+                if (webViewRef.current) {
+                  setTimeout(() => {
+                    if (!handledAuthRef.current && webViewRef.current) {
+                      webViewRef.current.injectJavaScript(`
+                        (function() {
+                          try {
+                            var html = document.documentElement.innerHTML;
+                            var scripts = document.getElementsByTagName('script');
+                            
+                            for (var i = 0; i < scripts.length; i++) {
+                              var scriptContent = scripts[i].innerHTML || scripts[i].textContent || '';
+                              var accessMatch = scriptContent.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                              var refreshMatch = scriptContent.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                              
+                              if (accessMatch && accessMatch[1]) {
+                                var access = accessMatch[1];
+                                var refresh = refreshMatch && refreshMatch[1] ? refreshMatch[1] : null;
+                                
+                                if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                  window.ReactNativeWebView.postMessage(JSON.stringify({
+                                    type: 'token',
+                                    jwtToken: access,
+                                    refreshToken: refresh
+                                  }));
+                                  return true;
+                                }
+                              }
+                            }
+                            
+                            var htmlAccessMatch = html.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                            var htmlRefreshMatch = html.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                            
+                            if (htmlAccessMatch && htmlAccessMatch[1]) {
+                              var access = htmlAccessMatch[1];
+                              var refresh = htmlRefreshMatch && htmlRefreshMatch[1] ? htmlRefreshMatch[1] : null;
+                              
+                              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({
+                                  type: 'token',
+                                  jwtToken: access,
+                                  refreshToken: refresh
+                                }));
+                                return true;
+                              }
+                            }
+                            
+                            return false;
+                          } catch (e) {
+                            return false;
+                          }
+                        })();
+                        true;
+                      `);
+                    }
+                  }, 200);
+                  
+                  // 타임아웃 설정
+                  if (postMessageTimeoutRef.current) {
+                    clearTimeout(postMessageTimeoutRef.current);
+                  }
+                  postMessageTimeoutRef.current = setTimeout(() => {
+                    if (!handledAuthRef.current) {
+                      console.error('[Login] 토큰을 받지 못했습니다 (5초 타임아웃)');
+                      setShowWebView(false);
+                      setWebViewLoading(false);
+                      setLoading(false);
+                      Alert.alert('로그인 실패', '로그인 응답을 받지 못했습니다. 다시 시도해주세요.');
+                    }
+                  }, 5000);
+                }
+              }
+            }}
+            onError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.error('[Login] WebView 에러:', nativeEvent);
+              
+              if (postMessageTimeoutRef.current) {
+                clearTimeout(postMessageTimeoutRef.current);
+                postMessageTimeoutRef.current = null;
+              }
+              
+              setWebViewLoading(false);
+              setLoading(false);
+              Alert.alert('오류', '페이지를 불러오는 중 오류가 발생했습니다.');
+            }}
+            injectedJavaScript={`
+              (function() {
+                if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) {
+                  return;
+                }
+                
+                var tokenSent = false;
+                
+                function extractAndSendToken() {
+                  if (tokenSent) return true;
+                  
+                  try {
+                    var html = document.documentElement.innerHTML;
+                    var scripts = document.getElementsByTagName('script');
+                    
+                    // 1. 스크립트 태그에서 토큰 찾기
+                    for (var i = 0; i < scripts.length; i++) {
+                      var scriptContent = scripts[i].innerHTML || scripts[i].textContent || '';
+                      var accessMatch = scriptContent.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                      var refreshMatch = scriptContent.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                      
+                      if (accessMatch && accessMatch[1]) {
+                        var access = accessMatch[1];
+                        var refresh = refreshMatch && refreshMatch[1] ? refreshMatch[1] : null;
+                        
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                          type: 'token',
+                          jwtToken: access,
+                          refreshToken: refresh
+                        }));
+                        tokenSent = true;
+                        return true;
+                      }
+                      
+                      // postMessage 스크립트 재실행
+                      if (scriptContent.includes('postMessage') && scriptContent.includes('jwtToken')) {
+                        try {
+                          eval(scriptContent);
+                        } catch (e) {}
+                      }
+                    }
+                    
+                    // 2. HTML 전체에서 토큰 찾기
+                    var htmlAccessMatch = html.match(/var\\s+access\\s*=\\s*['"]([^'"]+)['"]/);
+                    var htmlRefreshMatch = html.match(/var\\s+refresh\\s*=\\s*['"]([^'"]+)['"]/);
+                    
+                    if (htmlAccessMatch && htmlAccessMatch[1]) {
+                      var access = htmlAccessMatch[1];
+                      var refresh = htmlRefreshMatch && htmlRefreshMatch[1] ? htmlRefreshMatch[1] : null;
+                      
+                      window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'token',
+                        jwtToken: access,
+                        refreshToken: refresh
+                      }));
+                      tokenSent = true;
+                      return true;
+                    }
+                    
+                    // 3. 전역 변수 확인
+                    if (typeof window.oauthAccessToken !== 'undefined' && window.oauthAccessToken) {
+                      window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'token',
+                        jwtToken: window.oauthAccessToken,
+                        refreshToken: window.oauthRefreshToken || null
+                      }));
+                      tokenSent = true;
+                      return true;
+                    }
+                    
+                    return false;
+                  } catch (e) {
+                    return false;
+                  }
+                }
+                
+                // 즉시 시도
+                extractAndSendToken();
+                
+                // DOMContentLoaded 후 시도
+                if (document.readyState === 'loading') {
+                  document.addEventListener('DOMContentLoaded', function() {
+                    setTimeout(extractAndSendToken, 100);
+                  });
+                } else {
+                  setTimeout(extractAndSendToken, 100);
+                }
+                
+                // 추가 시도
+                setTimeout(extractAndSendToken, 300);
+                setTimeout(extractAndSendToken, 600);
+                setTimeout(extractAndSendToken, 1000);
+              })();
+              true;
+            `}
           />
 
           {webViewLoading && (
@@ -1203,5 +1596,3 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
-
-

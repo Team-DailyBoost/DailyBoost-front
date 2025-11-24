@@ -60,14 +60,17 @@ export function LoginScreenExample() {
     navigation.navigate('SocialLogin', { provider: 'kakao' });
   };
 
-  return (
-    // ... 로그인 UI
-    // <TouchableOpacity onPress={handleNaverLogin}>
-    //   <Text>네이버로 로그인</Text>
-    // </TouchableOpacity>
-    // <TouchableOpacity onPress={handleKakaoLogin}>
-    //   <Text>카카오로 로그인</Text>
-    // </TouchableOpacity>
-  );
+  return null; // 예시 파일이므로 실제 UI는 구현하지 않음
+  // 실제 사용 시:
+  // return (
+  //   <View>
+  //     <TouchableOpacity onPress={handleNaverLogin}>
+  //       <Text>네이버로 로그인</Text>
+  //     </TouchableOpacity>
+  //     <TouchableOpacity onPress={handleKakaoLogin}>
+  //       <Text>카카오로 로그인</Text>
+  //     </TouchableOpacity>
+  //   </View>
+  // );
 }
 

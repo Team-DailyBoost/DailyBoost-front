@@ -1,29 +1,15 @@
-/**
- * Post API
- * 
- * OpenAPI: /api/post/**
- * 
- * 게시글 관련 API 함수들입니다.
- */
-import client, { extractApiValue, ApiResponse } from './client';
+import { requestWithWebViewFallback } from './http';
+import { API_CONFIG } from '../config/api';
+import { WebViewManager } from '../utils/webViewManager';
 
-/**
- * Post Kind 타입
- */
-export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET';
+export type PostKind = 'EXERCISE' | 'FOOD' | 'DIET' | 'COMPETITION';
 
-/**
- * Post Create Request 타입
- */
 export interface PostCreateRequest {
   title: string;
   content: string;
   postKind: PostKind;
 }
 
-/**
- * Post Update Request 타입
- */
 export interface PostUpdateRequest {
   id: number;
   title: string;
@@ -31,9 +17,6 @@ export interface PostUpdateRequest {
   postKind?: PostKind;
 }
 
-/**
- * Posts Response 타입 (목록 아이템)
- */
 export interface PostsResponse {
   id: number;
   title: string;
@@ -45,36 +28,33 @@ export interface PostsResponse {
   commentCount: number;
 }
 
-/**
- * Comment Info 타입 (게시글 상세에 포함)
- */
-export interface CommentInfo {
-  commentId: number;
-  content: string;
-  createAt: string;
-  likeCount: number;
-  unLikeCount: number;
-  authorName: string;
-}
-
-/**
- * Post Response 타입 (상세)
- */
 export interface PostResponse {
+  id: number;
   title: string;
   content: string;
   authorName: string;
-  createdAt: string;
+  authorId: number;
   viewCount: number;
-  commentCount: number;
   likeCount: number;
   unLikeCount: number;
-  commentInfos: CommentInfo[];
+  commentCount: number;
+  postKind: PostKind;
+  createdAt: string;
+  updatedAt: string;
+  imageUrls?: string[];
+  comments?: CommentInfo[];
 }
 
-/**
- * Search Post Response 타입
- */
+export interface CommentInfo {
+  id: number;
+  content: string;
+  authorName: string;
+  authorId: number;
+  createdAt: string;
+  likeCount: number;
+  imageUrl?: string;
+}
+
 export interface SearchPostResponse {
   id: number;
   title: string;
@@ -82,226 +62,733 @@ export interface SearchPostResponse {
   authorName: string;
   viewCount: number;
   likeCount: number;
-  unLikeCount: number;
   commentCount: number;
 }
 
-/**
- * Message Response 타입
- */
 export interface MessageResponse {
   message: string;
 }
 
-/**
- * 게시글 목록 조회 (PostKind별)
- * GET /api/post/posts?postKind=...
- */
-export async function getPosts(postKind: PostKind): Promise<PostsResponse[]> {
-  const response = await client.get<ApiResponse<PostsResponse[]>>('/api/post/posts', {
-    params: { postKind },
-  });
-  return extractApiValue(response);
-}
-
-/**
- * 게시글 상세 조회
- * GET /api/post/{postId}
- */
-export async function getPost(postId: number): Promise<PostResponse> {
-  const response = await client.get<ApiResponse<PostResponse>>(`/api/post/${postId}`);
-  return extractApiValue(response);
-}
-
-/**
- * 게시글 제목으로 검색
- * GET /api/post?title=...
- */
-export async function searchPosts(title: string): Promise<SearchPostResponse[]> {
-  const response = await client.get<ApiResponse<SearchPostResponse[]>>('/api/post', {
-    params: { title },
-  });
-  return extractApiValue(response);
-}
-
-/**
- * 게시글 생성
- * POST /api/post/create
- */
 export interface PostImageUpload {
   uri: string;
   name?: string;
   type?: string;
 }
 
-export async function createPost(
-  request: PostCreateRequest,
-  files?: PostImageUpload[],
-): Promise<MessageResponse> {
-  // React Native의 FormData를 직접 사용하여 multipart/form-data 전송
-  const { API_CONFIG } = await import('../config/api');
-  const { getAccessToken, getSessionCookie } = await import('../utils/storage');
-  
-  const path = API_CONFIG.ENDPOINTS?.CREATE_POST || '/api/post/create';
-  const fullUrl = `${API_CONFIG.BASE_URL}${path}`;
-  
+/**
+ * 게시글 목록 조회
+ * 백엔드: GET /api/post/posts?postKind=EXERCISE
+ */
+export async function getPosts(postKind: PostKind): Promise<PostsResponse[]> {
   try {
-    // FormData 생성
-    const formData = new FormData();
-    
-    // JSON part 추가
-    // React Native FormData는 문자열을 추가하면 text/plain으로 전송되지만,
-    // Spring @RequestPart는 Content-Type: application/json을 기대함
-    // React Native에서는 FormData에 JSON을 Blob처럼 추가할 수 없으므로
-    // 문자열로 추가하고 백엔드가 파싱할 수 있도록 함
-    formData.append('postCreateRequest', JSON.stringify(request));
-    
-    // 파일 추가 (있는 경우)
-    if (files && files.length > 0) {
-      files.forEach((file) => {
-        // React Native FormData는 { uri, type, name } 형식으로 파일 추가
-        formData.append('files', {
-          uri: file.uri,
-          type: file.type || 'image/jpeg',
-          name: file.name || `image-${Date.now()}.jpg`,
-        } as any);
-      });
-    }
-    
-    console.log('📤 [createPost] FormData 생성 완료, 전송 시작');
-    console.log('📤 [createPost] 요청 데이터:', { title: request.title, postKind: request.postKind, filesCount: files?.length || 0 });
-    
-    // 인증 정보 가져오기
-    const token = await getAccessToken();
-    const sessionCookie = await getSessionCookie();
-    
-    // 헤더 구성
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
-    };
-    
-    // JWT 토큰이 있으면 사용, 없으면 세션 쿠키 사용
-    if (token) {
-      headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
-    } else if (sessionCookie) {
-      const cookieValue = sessionCookie.includes('=') ? sessionCookie.split('=')[1].split(';')[0] : sessionCookie;
-      headers['Cookie'] = `JSESSIONID=${cookieValue}`;
-    }
-    
-    // FormData는 Content-Type을 자동으로 설정 (boundary 포함)
-    // React Native가 자동으로 multipart/form-data와 boundary를 설정함
-    
-    // 직접 fetch 사용
-    const response = await fetch(fullUrl, {
-      method: 'POST',
-      headers,
-      body: formData,
-      credentials: 'include',
+    return await requestWithWebViewFallback<PostsResponse[]>('GET', '/api/post/posts', {
+      query: { postKind },
     });
-    
-    console.log('📦 [createPost] 응답 상태:', response.status);
-    
-    // 응답 파싱
-    const contentType = response.headers.get('content-type') || '';
-    let responseData: any;
-    
-    if (contentType.includes('application/json')) {
-      responseData = await response.json();
-    } else {
-      const text = await response.text();
-      console.warn('📦 [createPost] JSON이 아닌 응답:', text.substring(0, 200));
-      responseData = { error: text || '알 수 없는 오류' };
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    // 404, 500, 사용자를 찾을 수 없습니다 등의 에러는 빈 배열 반환
+    if (
+      message.includes('404') ||
+      message.includes('500') ||
+      message.includes('"errorCode":1100') ||
+      message.includes('USER_NOT_FOUND') ||
+      message.includes('사용자를 찾을 수 없습니다') ||
+      message.includes('Internal Server Error')
+    ) {
+      console.log('[Post API] 게시글 목록 조회 실패, 빈 배열 반환:', postKind, message);
+      return [];
     }
-    
-    console.log('📦 [createPost] 응답 수신:', JSON.stringify(responseData).substring(0, 200));
-    
-    // 에러 상태 코드 처리
-    if (!response.ok) {
-      const errorMessage = 
-        (responseData?.message || responseData?.error || responseData?.description) ||
-        `서버 오류 (${response.status})`;
-      throw new Error(errorMessage);
-    }
-    
-    // api.post를 사용하여 FormData 전송
-    // const response = await api.post<MessageResponse>(path, formData);
-    
-    // 백엔드 응답 형식: Api<MessageResponse> = { errorCode, description, value: { message: string } }
-    if (responseData && typeof responseData === 'object') {
-      const dataObj = responseData as Record<string, unknown>;
-      
-      // Api<T> 형식: { errorCode, description, value }
-      if ('value' in dataObj) {
-        const value = dataObj.value;
-        if (value && typeof value === 'object' && value !== null) {
-          const valueObj = value as Record<string, unknown>;
-          if ('message' in valueObj && typeof valueObj.message === 'string') {
-            return { message: valueObj.message } as MessageResponse;
-          }
-          return value as MessageResponse;
-        }
-        return value as MessageResponse;
-      }
-      
-      // 직접 MessageResponse 형식
-      if ('message' in dataObj && typeof dataObj.message === 'string') {
-        return { message: dataObj.message } as MessageResponse;
-      }
-      
-      // 에러 응답
-      if ('errorCode' in dataObj && dataObj.errorCode !== 200) {
-        const errorMessage = 
-          (typeof dataObj.description === 'string' ? dataObj.description : null) ||
-          '게시글 작성에 실패했습니다.';
-        throw new Error(errorMessage);
-      }
-    }
-    
-    console.error('❌ [createPost] 예상치 못한 응답 형식:', responseData);
-    throw new Error(`게시글 작성에 실패했습니다. 응답: ${JSON.stringify(responseData).substring(0, 100)}`);
-  } catch (error) {
-    console.error('❌ [createPost] 에러 발생:', error);
-    const errorMessage = error instanceof Error 
-      ? error.message 
-      : (typeof error === 'object' && error !== null && 'error' in error && typeof (error as Record<string, unknown>).error === 'string'
-          ? (error as Record<string, unknown>).error
-          : '게시글 작성에 실패했습니다.');
-    throw new Error(String(errorMessage));
+    throw error;
   }
 }
 
 /**
- * 게시글 수정
- * POST /api/post/update
+ * 게시글 상세 조회
+ * 백엔드: GET /api/post/{postId}
  */
-export async function updatePost(request: PostUpdateRequest): Promise<MessageResponse> {
-  const response = await client.post<ApiResponse<MessageResponse>>('/api/post/update', request);
-  return extractApiValue(response);
+export async function getPost(postId: number): Promise<PostResponse | null> {
+  try {
+    return await requestWithWebViewFallback<PostResponse>('GET', `/api/post/${postId}`);
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    // 404 에러나 사용자를 찾을 수 없습니다 에러는 null 반환
+    if (
+      message.includes('404') ||
+      message.includes('"errorCode":1100') ||
+      message.includes('USER_NOT_FOUND') ||
+      message.includes('사용자를 찾을 수 없습니다') ||
+      message.includes('POST_NOT_FOUND')
+    ) {
+      console.log('[Post API] 게시글 조회 실패 (404), null 반환:', postId);
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * 게시글 검색
+ * 백엔드: GET /api/post?title=...
+ */
+export async function searchPosts(title: string): Promise<SearchPostResponse[]> {
+  try {
+    return await requestWithWebViewFallback<SearchPostResponse[]>('GET', '/api/post', {
+      query: { title },
+    });
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    // 404, 500, POST_NOT_FOUND 등의 에러는 빈 배열 반환
+    if (
+      message.includes('404') ||
+      message.includes('500') ||
+      message.includes('POST_NOT_FOUND') ||
+      message.includes('Internal Server Error')
+    ) {
+      console.log('[Post API] 게시글 검색 실패, 빈 배열 반환:', title, message);
+      return [];
+    }
+    throw error;
+  }
+}
+
+/**
+ * 게시글 작성
+ * 백엔드: POST /api/post/create
+ * consumes: MediaType.MULTIPART_FORM_DATA_VALUE
+ * @RequestPart @Valid PostCreateRequest postCreateRequest
+ * @RequestPart(required = false) List<MultipartFile> files
+ * 
+ * 백엔드 구조:
+ * - PostCreateRequest: { title: String, content: String, postKind: PostKind }
+ * - files: List<MultipartFile> (optional)
+ */
+export async function createPost(
+  request: PostCreateRequest,
+  files?: PostImageUpload[],
+): Promise<MessageResponse> {
+  // WebView 확인
+  if (!WebViewManager.isAvailable()) {
+    throw new Error('WebView가 필요합니다. 로그인 후 다시 시도해주세요.');
+  }
+
+  // 백엔드 validation과 동일하게 검증
+  if (!request.title || !request.title.trim()) {
+    throw new Error('제목을 입력해주세요.');
+  }
+  if (request.title.trim().length > 100) {
+    throw new Error('제목은 최대 100자까지 가능합니다.');
+  }
+  if (!request.content || !request.content.trim()) {
+    throw new Error('내용을 입력해주세요.');
+  }
+  if (request.content.trim().length > 1000) {
+    throw new Error('내용은 최대 1000자까지 가능합니다.');
+  }
+  if (!request.postKind) {
+    throw new Error('게시글 종류를 선택해주세요.');
+  }
+
+  // 인증 헤더 준비
+  const { getAccessToken, getSessionCookie } = await import('../utils/storage');
+  const token = await getAccessToken();
+  const cookie = await getSessionCookie();
+  
+  const headers: Record<string, string> = { 
+    'Accept': 'application/json',
+  };
+  
+  if (token) {
+    headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+  } else if (cookie) {
+    let cookieValue = cookie.includes(';') ? cookie.split(';')[0] : cookie;
+    if (!cookieValue.includes('JSESSIONID=')) {
+      cookieValue = `JSESSIONID=${cookieValue}`;
+    }
+    headers['Cookie'] = cookieValue;
+  }
+
+  // 백엔드 기대 형식: multipart/form-data
+  // - part 이름: "postCreateRequest" (JSON, Content-Type: application/json)
+  // - part 이름: "files" (List<MultipartFile>, optional)
+  const formDataFields: Record<string, any> = {
+    postCreateRequest: {
+      title: request.title.trim(),
+      content: request.content.trim(),
+      postKind: request.postKind, // EXERCISE, FOOD, DIET, COMPETITION
+    },
+  };
+  
+  // 디버깅: 요청 데이터 검증
+  if (!formDataFields.postCreateRequest.title || formDataFields.postCreateRequest.title.length === 0) {
+    throw new Error('제목이 비어있습니다.');
+  }
+  if (!formDataFields.postCreateRequest.content || formDataFields.postCreateRequest.content.length === 0) {
+    throw new Error('내용이 비어있습니다.');
+  }
+  if (!formDataFields.postCreateRequest.postKind) {
+    throw new Error('게시글 종류가 지정되지 않았습니다.');
+  }
+
+  // 디버깅: formDataFields 로깅
+  console.log('[CREATE_POST] formDataFields 준비:', {
+    postCreateRequest: {
+      title: formDataFields.postCreateRequest.title,
+      content: formDataFields.postCreateRequest.content,
+      contentLength: formDataFields.postCreateRequest.content?.length || 0,
+      postKind: formDataFields.postCreateRequest.postKind,
+    },
+    hasFiles: files && files.length > 0,
+  });
+
+  // 파일 처리: WebView에서 FileReader 사용을 위해 base64로 변환
+  if (files && files.length > 0) {
+    const MAX_FILE_SIZE = 6 * 1024 * 1024; // 6MB
+    const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+    
+    const filePromises = files.map(async (file, index) => {
+      try {
+        const response = await fetch(file.uri);
+        const blob = await response.blob();
+        
+        // 파일 크기 검증
+        if (blob.size > MAX_FILE_SIZE) {
+          throw new Error(`파일 크기가 6MB를 초과합니다. (${(blob.size / 1024 / 1024).toFixed(2)}MB)`);
+        }
+        
+        const fileItem = await new Promise<{ data: string; name: string; type: string }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = (reader.result as string).split(',')[1];
+            
+            // 파일 이름 처리: 확장자가 확실히 포함되도록 보장
+            let fileName = file.name || `post-${Date.now()}-${index}.jpg`;
+            
+            // 파일 타입에서 확장자 추출
+            const mimeType = file.type || blob.type || 'image/jpeg';
+            const mimeExt = mimeType.split('/')[1]?.toLowerCase() || 'jpg';
+            
+            // 파일 이름에 확장자가 없으면 추가
+            if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+              // 허용된 확장자인지 확인
+              const ext = ALLOWED_EXTENSIONS.includes(mimeExt) ? mimeExt : 'jpg';
+              fileName = fileName.replace(/\.[^.]*$/, '') + '.' + ext;
+            }
+            
+            // 허용된 확장자인지 확인
+            const currentExt = fileName.split('.').pop()?.toLowerCase() || 'jpg';
+            if (!ALLOWED_EXTENSIONS.includes(currentExt)) {
+              // 허용되지 않은 확장자는 jpg로 변경
+              fileName = fileName.replace(/\.[^.]*$/, '.jpg');
+            }
+            
+            // 파일 타입 검증 (허용된 MIME 타입인지)
+            const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+            const finalMimeType = allowedMimeTypes.includes(mimeType) ? mimeType : 'image/jpeg';
+            
+            console.log('[CREATE_POST] 파일 처리 완료:', {
+              index,
+              originalName: file.name,
+              finalName: fileName,
+              mimeType: finalMimeType,
+              size: blob.size,
+              sizeMB: (blob.size / 1024 / 1024).toFixed(2),
+            });
+            
+            resolve({
+              data: base64,
+              name: fileName,
+              type: finalMimeType,
+            });
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        return fileItem;
+      } catch (error: any) {
+        throw new Error(`파일 변환 실패 (${file.name || `파일 ${index + 1}`}): ${error?.message || String(error)}`);
+      }
+    });
+
+    const fileData = await Promise.all(filePromises);
+    formDataFields.files = fileData;
+    
+    console.log('[CREATE_POST] 파일 처리 완료:', {
+      filesCount: fileData.length,
+      fileNames: fileData.map(f => f.name),
+      totalSize: fileData.reduce((sum, f) => sum + (f.data.length * 0.75), 0), // base64 크기 (대략)
+    });
+  }
+
+  // API 요청
+  console.log('[CREATE_POST] API 요청 시작:', {
+    path: '/api/post/create',
+    method: 'POST',
+    hasAuth: !!(headers['Authorization'] || headers['Cookie']),
+  });
+
+  const response = await WebViewManager.requestApi({
+    method: 'POST',
+    path: '/api/post/create',
+    headers,
+    useFormData: true,
+    formDataFields,
+  });
+
+  // 디버깅: 응답 로깅
+  console.log('[CREATE_POST] API 응답 받음:', {
+    responseType: typeof response,
+    isObject: typeof response === 'object',
+    hasStatus: response && typeof response === 'object' && 'status' in response,
+    hasErrorCode: response && typeof response === 'object' && 'errorCode' in response,
+    hasError: response && typeof response === 'object' && 'error' in response,
+    hasResponse: !!response,
+    hasValue: response && typeof response === 'object' && 'value' in response,
+    responseKeys: response && typeof response === 'object' ? Object.keys(response) : [],
+    responsePreview: typeof response === 'object' ? JSON.stringify(response).substring(0, 500) : String(response).substring(0, 500),
+  });
+
+  // 백엔드 응답 형식: Api<MessageResponse>
+  // Api { errorCode: 200, value: MessageResponse { message: string } }
+  // 또는 에러 시: Api { errorCode: xxx, description: string }
+  
+  // 에러 처리
+  if (response && typeof response === 'object') {
+    // status가 400 이상이면 에러
+    if ('status' in response && (response as any).status >= 400) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      if ((response as any).status === 400) {
+        // 400 Bad Request: validation 실패 또는 제목 중복
+        const responseText = JSON.stringify(response);
+        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+        } else if (responseText.includes('NotBlank') || responseText.includes('NotNull')) {
+          errorMsg = '제목, 내용, 게시글 종류를 모두 입력해주세요.';
+        } else if (responseText.includes('Size')) {
+          errorMsg = '제목은 최대 100자, 내용은 최대 1000자까지 가능합니다.';
+        }
+      } else if ((response as any).status === 500) {
+        // 500 Internal Server Error: 서버 오류
+        // 백엔드에서 발생할 수 있는 문제:
+        // 1. Post 엔티티의 comments 리스트가 초기화되지 않음
+        // 2. User를 찾을 수 없음
+        // 3. 파일 저장 실패
+        // 4. DB 연결 문제
+        errorMsg = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
+      }
+      
+      console.log('[CREATE_POST] status >= 400 에러:', { status: (response as any).status, message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // errorCode가 있고 200이 아니면 에러
+    if ('errorCode' in response && (response as any).errorCode !== 200) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      if ((response as any).errorCode === 400) {
+        const responseText = JSON.stringify(response);
+        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+        }
+      }
+      
+      console.log('[CREATE_POST] errorCode != 200 에러:', { errorCode: (response as any).errorCode, message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // error 속성이 true이면 에러
+    if ((response as any).error === true) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      const responseText = JSON.stringify(response);
+      if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+        errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+      }
+      
+      console.log('[CREATE_POST] error === true 에러:', { message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // 성공: value 속성이 있으면 ApiResponse 래퍼
+    if ('value' in response) {
+      console.log('[CREATE_POST] 성공 (value 속성):', response.value);
+      return (response as any).value as MessageResponse;
+    }
+    
+    // message 속성이 있고 error가 없으면 MessageResponse 직접
+    if ('message' in response && !('error' in response)) {
+      console.log('[CREATE_POST] 성공 (message 직접):', response);
+      return response as MessageResponse;
+    }
+  }
+
+  console.log('[CREATE_POST] 성공 (응답 직접 반환):', response);
+  return response as MessageResponse;
+
+  // 디버깅: 응답 로깅
+  console.log('[CREATE_POST] API 응답 받음:', {
+    responseType: typeof response,
+    isObject: typeof response === 'object',
+    hasStatus: response && typeof response === 'object' && 'status' in response,
+    hasErrorCode: response && typeof response === 'object' && 'errorCode' in response,
+    hasError: response && typeof response === 'object' && 'error' in response,
+    hasResponse: !!response,
+    hasValue: response && typeof response === 'object' && 'value' in response,
+    responseKeys: response && typeof response === 'object' ? Object.keys(response) : [],
+    responsePreview: typeof response === 'object' ? JSON.stringify(response).substring(0, 500) : String(response).substring(0, 500),
+  });
+
+  // 백엔드 응답 형식: Api<MessageResponse>
+  // Api { errorCode: 200, value: MessageResponse { message: string } }
+  // 또는 에러 시: Api { errorCode: xxx, description: string }
+  
+  // 에러 처리
+  if (response && typeof response === 'object') {
+    // status가 400 이상이면 에러
+    if ('status' in response && (response as any).status >= 400) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      if ((response as any).status === 400) {
+        // 400 Bad Request: validation 실패 또는 제목 중복
+        const responseText = JSON.stringify(response);
+        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+        } else if (responseText.includes('NotBlank') || responseText.includes('NotNull')) {
+          errorMsg = '제목, 내용, 게시글 종류를 모두 입력해주세요.';
+        } else if (responseText.includes('Size')) {
+          errorMsg = '제목은 최대 100자, 내용은 최대 1000자까지 가능합니다.';
+        }
+      } else if ((response as any).status === 500) {
+        // 500 Internal Server Error: 서버 오류
+        // 백엔드에서 발생할 수 있는 문제:
+        // 1. Post 엔티티의 comments 리스트가 초기화되지 않음
+        // 2. User를 찾을 수 없음
+        // 3. 파일 저장 실패
+        // 4. DB 연결 문제
+        errorMsg = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
+      }
+      
+      console.log('[CREATE_POST] status >= 400 에러:', { status: (response as any).status, message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // errorCode가 있고 200이 아니면 에러
+    if ('errorCode' in response && (response as any).errorCode !== 200) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      if ((response as any).errorCode === 400) {
+        const responseText = JSON.stringify(response);
+        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+        }
+      }
+      
+      console.log('[CREATE_POST] errorCode != 200 에러:', { errorCode: (response as any).errorCode, message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // error 속성이 true이면 에러
+    if ((response as any).error === true) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      const responseText = JSON.stringify(response);
+      if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+        errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+      }
+      
+      console.log('[CREATE_POST] error === true 에러:', { message: errorMsg });
+      throw new Error(errorMsg);
+    }
+    
+    // 성공: value 속성이 있으면 ApiResponse 래퍼
+    if ('value' in response) {
+      console.log('[CREATE_POST] 성공 (value 속성):', response.value);
+      return (response as any).value as MessageResponse;
+    }
+    
+    // message 속성이 있고 error가 없으면 MessageResponse 직접
+    if ('message' in response && !('error' in response)) {
+      console.log('[CREATE_POST] 성공 (message 직접):', response);
+      return response as MessageResponse;
+    }
+  }
+
+  console.log('[CREATE_POST] 성공 (응답 직접 반환):', response);
+  return response as MessageResponse;
+}
+
+/**
+ * 게시글 수정
+ * 백엔드: POST /api/post/update
+ * @RequestPart PostUpdateRequest postUpdateRequest
+ * @RequestPart(required = false) List<MultipartFile> files
+ * 
+ * 백엔드 구조:
+ * - PostUpdateRequest: { id: Long, title: String, content: String, postKind: PostKind? }
+ * - files: List<MultipartFile> (optional)
+ */
+export async function updatePost(
+  request: PostUpdateRequest,
+  files?: PostImageUpload[],
+): Promise<MessageResponse> {
+  // WebView 확인
+  if (!WebViewManager.isAvailable()) {
+    throw new Error('WebView가 필요합니다. 로그인 후 다시 시도해주세요.');
+  }
+
+  // 백엔드 validation 검증
+  if (!request.id) {
+    throw new Error('게시글 ID가 필요합니다.');
+  }
+  if (!request.title || !request.title.trim()) {
+    throw new Error('제목을 입력해주세요.');
+  }
+  if (request.title.trim().length > 100) {
+    throw new Error('제목은 최대 100자까지 가능합니다.');
+  }
+  if (!request.content || !request.content.trim()) {
+    throw new Error('내용을 입력해주세요.');
+  }
+  if (request.content.trim().length > 1000) {
+    throw new Error('내용은 최대 1000자까지 가능합니다.');
+  }
+
+  // 인증 헤더 준비
+  const { getAccessToken, getSessionCookie } = await import('../utils/storage');
+  const token = await getAccessToken();
+  const cookie = await getSessionCookie();
+  
+  const headers: Record<string, string> = { 
+    'Accept': 'application/json',
+  };
+  
+  if (token) {
+    headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+  } else if (cookie) {
+    let cookieValue = cookie.includes(';') ? cookie.split(';')[0] : cookie;
+    if (!cookieValue.includes('JSESSIONID=')) {
+      cookieValue = `JSESSIONID=${cookieValue}`;
+    }
+    headers['Cookie'] = cookieValue;
+  }
+
+  // 백엔드 기대 형식: multipart/form-data
+  // - part 이름: "postUpdateRequest" (JSON, Content-Type: application/json)
+  // - part 이름: "files" (List<MultipartFile>, optional)
+  const formDataFields: Record<string, any> = {
+    postUpdateRequest: {
+      id: request.id,
+      title: request.title.trim(),
+      content: request.content.trim(),
+      // postKind가 없으면 null로 보내지 않고 필드 자체를 생략 (백엔드가 optional로 처리)
+      ...(request.postKind ? { postKind: request.postKind } : {}),
+    },
+  };
+
+  console.log('[UPDATE_POST] formDataFields 준비:', {
+    postUpdateRequest: {
+      id: formDataFields.postUpdateRequest.id,
+      title: formDataFields.postUpdateRequest.title,
+      content: formDataFields.postUpdateRequest.content.substring(0, 50),
+      postKind: formDataFields.postUpdateRequest.postKind || 'undefined',
+    },
+    hasFiles: files && files.length > 0,
+  });
+
+  // 파일 처리: WebView에서 FileReader 사용을 위해 base64로 변환 (createPost와 동일)
+  if (files && files.length > 0) {
+    const MAX_FILE_SIZE = 6 * 1024 * 1024; // 6MB
+    const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+    
+    const filePromises = files.map(async (file, index) => {
+      try {
+        const response = await fetch(file.uri);
+        const blob = await response.blob();
+        
+        // 파일 크기 검증
+        if (blob.size > MAX_FILE_SIZE) {
+          throw new Error(`파일 크기가 6MB를 초과합니다. (${(blob.size / 1024 / 1024).toFixed(2)}MB)`);
+        }
+        
+        const fileItem = await new Promise<{ data: string; name: string; type: string }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = (reader.result as string).split(',')[1];
+            
+            // 파일 이름 처리: 확장자가 확실히 포함되도록 보장
+            let fileName = file.name || `post-${Date.now()}-${index}.jpg`;
+            
+            // 파일 타입에서 확장자 추출
+            const mimeType = file.type || blob.type || 'image/jpeg';
+            const mimeExt = mimeType.split('/')[1]?.toLowerCase() || 'jpg';
+            
+            // 파일 이름에 확장자가 없으면 추가
+            if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+              // 허용된 확장자인지 확인
+              const ext = ALLOWED_EXTENSIONS.includes(mimeExt) ? mimeExt : 'jpg';
+              fileName = fileName.replace(/\.[^.]*$/, '') + '.' + ext;
+            }
+            
+            // 허용된 확장자인지 확인
+            const currentExt = fileName.split('.').pop()?.toLowerCase() || 'jpg';
+            if (!ALLOWED_EXTENSIONS.includes(currentExt)) {
+              // 허용되지 않은 확장자는 jpg로 변경
+              fileName = fileName.replace(/\.[^.]*$/, '.jpg');
+            }
+            
+            // 파일 타입 검증 (허용된 MIME 타입인지)
+            const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+            const finalMimeType = allowedMimeTypes.includes(mimeType) ? mimeType : 'image/jpeg';
+            
+            resolve({
+              data: base64,
+              name: fileName,
+              type: finalMimeType,
+            });
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        return fileItem;
+      } catch (error: any) {
+        throw new Error(`파일 변환 실패 (${file.name || `파일 ${index + 1}`}): ${error?.message || String(error)}`);
+      }
+    });
+
+    const fileData = await Promise.all(filePromises);
+    formDataFields.files = fileData;
+  }
+
+  // API 요청
+  console.log('[UPDATE_POST] API 요청 시작:', {
+    method: 'POST',
+    path: '/api/post/update',
+    hasAuth: !!(token || cookie),
+    hasFiles: files && files.length > 0,
+  });
+
+  const response = await WebViewManager.requestApi({
+    method: 'POST',
+    path: '/api/post/update',
+    headers,
+    useFormData: true,
+    formDataFields,
+  });
+
+  console.log('[UPDATE_POST] API 응답 받음:', {
+    hasResponse: !!response,
+    isObject: typeof response === 'object',
+    responseKeys: response && typeof response === 'object' ? Object.keys(response) : [],
+    hasStatus: response && typeof response === 'object' && 'status' in response,
+    status: response && typeof response === 'object' && 'status' in response ? (response as any).status : undefined,
+    hasError: response && typeof response === 'object' && 'error' in response,
+    hasValue: response && typeof response === 'object' && 'value' in response,
+    responsePreview: response && typeof response === 'object' ? JSON.stringify(response).substring(0, 200) : String(response).substring(0, 200),
+  });
+
+  // 백엔드 응답 형식: Api<MessageResponse>
+  // 에러 처리
+  if (response && typeof response === 'object') {
+    // status가 400 이상이면 에러
+    if ('status' in response && (response as any).status >= 400) {
+      const errorMsg = (response as any).message || (response as any).error || '게시글 수정에 실패했습니다.';
+      throw new Error(errorMsg);
+    }
+    
+    // errorCode가 있고 200이 아니면 에러
+    if ('errorCode' in response && (response as any).errorCode !== 200) {
+      const errorMsg = (response as any).description || (response as any).message || '게시글 수정에 실패했습니다.';
+      throw new Error(errorMsg);
+    }
+    
+    // error 속성이 true이면 에러
+    if ((response as any).error === true) {
+      const errorMsg = (response as any).message || (response as any).error || '게시글 수정에 실패했습니다.';
+      throw new Error(errorMsg);
+    }
+    
+    // 성공: value 속성이 있으면 ApiResponse 래퍼
+    if ('value' in response) {
+      return (response as any).value as MessageResponse;
+    }
+    
+    // message 속성이 있고 error가 없으면 MessageResponse 직접
+    if ('message' in response && !('error' in response)) {
+      return response as MessageResponse;
+    }
+  }
+
+  return response as MessageResponse;
 }
 
 /**
  * 게시글 삭제
- * POST /api/post/{postId}
+ * 백엔드: POST /api/post/{postId}
+ * @PathVariable Long postId
  */
 export async function deletePost(postId: number): Promise<MessageResponse> {
-  const response = await client.post<ApiResponse<MessageResponse>>(`/api/post/${postId}`);
-  return extractApiValue(response);
+  if (!postId || postId <= 0) {
+    throw new Error('유효한 게시글 ID가 필요합니다.');
+  }
+
+  try {
+    const result = await requestWithWebViewFallback<MessageResponse>('POST', `/api/post/${postId}`);
+    
+    // 백엔드 응답 형식: Api<MessageResponse>
+    // Api { errorCode: 200, value: MessageResponse { message: string } }
+    // 또는 에러 시: Api { errorCode: xxx, description: string }
+    
+    if (result && typeof result === 'object') {
+      // value 속성이 있으면 ApiResponse 래퍼
+      if ('value' in result) {
+        return (result as any).value as MessageResponse;
+      }
+      
+      // message 속성이 있고 error가 없으면 MessageResponse 직접
+      if ('message' in result && !('error' in result)) {
+        return result as MessageResponse;
+      }
+      
+      // errorCode가 있고 200이 아니면 에러
+      if ('errorCode' in result && (result as any).errorCode !== 200) {
+        const errorMsg = (result as any).description || (result as any).message || '게시글 삭제에 실패했습니다.';
+        throw new Error(errorMsg);
+      }
+    }
+    
+    return result as MessageResponse;
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    let errorMessage = message;
+    
+    // 500, 404 등의 에러 메시지 개선
+    if (message.includes('500') || message.includes('Internal Server Error')) {
+      console.log('[DELETE_POST] 게시글 삭제 실패 (500):', postId, message);
+      errorMessage = '서버 오류로 인해 게시글 삭제에 실패했습니다. 잠시 후 다시 시도해주세요.';
+    } else if (message.includes('404') || message.includes('POST_NOT_FOUND')) {
+      console.log('[DELETE_POST] 게시글 삭제 실패 (404):', postId, message);
+      errorMessage = '삭제하려는 게시글을 찾을 수 없습니다.';
+    } else if (message.includes('편집 권한이 없습니다') || message.includes('권한')) {
+      console.log('[DELETE_POST] 게시글 삭제 실패 (권한 없음):', postId, message);
+      errorMessage = '게시글을 삭제할 권한이 없습니다.';
+    } else {
+      console.log('[DELETE_POST] 게시글 삭제 실패:', postId, message);
+    }
+    
+    throw new Error(errorMessage);
+  }
 }
 
-/**
- * 게시글 좋아요
- * POST /api/post/like/{postId}
- */
 export async function likePost(postId: number): Promise<MessageResponse> {
-  const response = await client.post<ApiResponse<MessageResponse>>(`/api/post/like/${postId}`);
-  return extractApiValue(response);
+  return requestWithWebViewFallback<MessageResponse>('POST', `/api/post/like/${postId}`);
 }
 
-/**
- * 게시글 좋아요 취소
- * POST /api/post/unLike/{postId}
- */
 export async function unlikePost(postId: number): Promise<MessageResponse> {
-  const response = await client.post<ApiResponse<MessageResponse>>(`/api/post/unLike/${postId}`);
-  return extractApiValue(response);
+  return requestWithWebViewFallback<MessageResponse>('POST', `/api/post/unLike/${postId}`);
 }

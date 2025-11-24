@@ -81,7 +81,6 @@ export class UserService {
       const profile = await getUserProfileApi(userIdNum);
       return profile as UserProfile;
     } catch (error) {
-      console.error('사용자 프로필 조회 실패:', error);
       return null;
     }
   }
@@ -98,7 +97,6 @@ export class UserService {
       const result = await initUserInfoApi(request);
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('사용자 정보 등록 실패:', error);
       return { success: false, error: error?.message || '사용자 정보 등록 실패' };
     }
   }
@@ -114,7 +112,6 @@ export class UserService {
       const result = await recoverUserAccountApi(request);
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('계정 복구 실패:', error);
       return { success: false, error: error?.message || '계정 복구 실패' };
     }
   }
@@ -128,7 +125,6 @@ export class UserService {
       const result = await sendHtmlEmail({ emailAddr: email });
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('계정 복구 이메일 전송 실패:', error);
       return { success: false, error: error?.message || '이메일 전송에 실패했습니다.' };
     }
   }
@@ -144,7 +140,6 @@ export class UserService {
       const result = await updateUserInfoApi(request, file);
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('프로필 수정 실패:', error);
       return { success: false, error: error?.message || '프로필 수정 실패' };
     }
   }
@@ -163,7 +158,6 @@ export class UserService {
       }
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('계정 삭제 실패:', error);
       return { success: false, error: error?.message || '계정 삭제 실패' };
     }
   }

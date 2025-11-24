@@ -9,13 +9,14 @@ import {
   RefreshControl,
   Alert,
   Linking,
+  Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LineChart, BarChart } from 'react-native-chart-kit';
 import { Feather as Icon } from '@expo/vector-icons';
 import { FoodService } from '../../services/foodService';
 import { WorkoutService } from '../../services/workoutService';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
   aggregateDailyTotals,
   aggregateWeeklyCalories,
@@ -66,6 +67,7 @@ const EXERCISE_LEVEL_LABELS: Record<string, string> = {
 };
 
 export function Dashboard() {
+  const navigation = useNavigation();
   const [refreshing, setRefreshing] = useState(false);
   const [workoutTimer, setWorkoutTimer] = useState<number>(0);
   const [exerciseRecommendations, setExerciseRecommendations] = useState<ExerciseRecommendation[]>([]);
@@ -77,11 +79,23 @@ export function Dashboard() {
   const [weeklyLabels, setWeeklyLabels] = useState<string[]>(['월', '화', '수', '목', '금', '토', '일']);
   const [weeklyAverageCalories, setWeeklyAverageCalories] = useState(0);
   const [loadingFoodStats, setLoadingFoodStats] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>({});
   
   // 중복 호출 방지 플래그
   const requestingExerciseRef = useRef(false);
   const fallbackExerciseNoticeShown = useRef(false);
   const fallbackDietNoticeShown = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem('currentUser');
+        if (saved) {
+          setCurrentUser(JSON.parse(saved));
+        }
+      } catch {}
+    })();
+  }, []);
   
   const today = new Date().toLocaleDateString('ko-KR', {
     year: 'numeric',
@@ -213,6 +227,7 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  // 초기 로드 시 캐시된 데이터를 먼저 표시하고, 그 다음 최신 데이터를 가져옴
   useEffect(() => {
     (async () => {
       try {
@@ -227,14 +242,17 @@ export function Dashboard() {
         }
 
         const cachedWeekly = await readCachedWeeklyCalories();
-      if (cachedWeekly) {
-        setWeeklyLabels(cachedWeekly.labels);
-        setWeeklyCaloriesData(cachedWeekly.data);
-        setWeeklyAverageCalories(cachedWeekly.average);
-      }
+        if (cachedWeekly) {
+          setWeeklyLabels(cachedWeekly.labels);
+          setWeeklyCaloriesData(cachedWeekly.data);
+          setWeeklyAverageCalories(cachedWeekly.average);
+        }
+        
+        // 캐시된 데이터 표시 후 최신 데이터 로드
+        loadFoodStats();
       } catch {}
     })();
-  }, []);
+  }, [loadFoodStats]);
 
   const loadWorkoutTimer = async () => {
     try {
@@ -243,7 +261,7 @@ export function Dashboard() {
         setWorkoutTimer(parseInt(saved) || 0);
       }
     } catch (error) {
-      console.error('Failed to load workout timer:', error);
+      // 운동 타이머 로드 실패 시 무시
     }
   };
 
@@ -255,6 +273,7 @@ export function Dashboard() {
         FoodService.getWeeklyFoodLogs(),
       ]);
 
+      // 오늘 식단 데이터 처리
       if (todayRes.success && Array.isArray(todayRes.data)) {
         const normalizedToday = todayRes.data.map((item: any) => normalizeFoodApiItem(item));
         const totals = aggregateDailyTotals(normalizedToday);
@@ -265,8 +284,20 @@ export function Dashboard() {
           fat: Math.round(totals.fat),
         });
         await cacheTodayTotals(totals);
+      } else if (!todayRes.success) {
+        // API 실패 시 캐시된 데이터 사용
+        const cachedToday = await readCachedTodayTotals();
+        if (cachedToday) {
+          setFoodTotals({
+            calories: Math.round(cachedToday.calories),
+            protein: Math.round(cachedToday.protein),
+            carbs: Math.round(cachedToday.carbs),
+            fat: Math.round(cachedToday.fat),
+          });
+        }
       }
 
+      // 주간 식단 데이터 처리
       if (weeklyRes.success && Array.isArray(weeklyRes.data)) {
         const normalizedWeekly = weeklyRes.data.map((item: any) => normalizeFoodApiItem(item));
         const summary = aggregateWeeklyCalories(normalizedWeekly);
@@ -274,9 +305,34 @@ export function Dashboard() {
         setWeeklyCaloriesData(summary.data);
         setWeeklyAverageCalories(summary.average);
         await cacheWeeklyCalories(summary);
+      } else if (!weeklyRes.success) {
+        // API 실패 시 캐시된 데이터 사용
+        const cachedWeekly = await readCachedWeeklyCalories();
+        if (cachedWeekly) {
+          setWeeklyLabels(cachedWeekly.labels);
+          setWeeklyCaloriesData(cachedWeekly.data);
+          setWeeklyAverageCalories(cachedWeekly.average);
+        }
       }
     } catch (error) {
-      console.log('⚠️ 식단 통계 로드 실패:', error);
+      // 식단 통계 로드 실패 시 캐시된 데이터 사용
+      try {
+        const cachedToday = await readCachedTodayTotals();
+        if (cachedToday) {
+          setFoodTotals({
+            calories: Math.round(cachedToday.calories),
+            protein: Math.round(cachedToday.protein),
+            carbs: Math.round(cachedToday.carbs),
+            fat: Math.round(cachedToday.fat),
+          });
+        }
+        const cachedWeekly = await readCachedWeeklyCalories();
+        if (cachedWeekly) {
+          setWeeklyLabels(cachedWeekly.labels);
+          setWeeklyCaloriesData(cachedWeekly.data);
+          setWeeklyAverageCalories(cachedWeekly.average);
+        }
+      } catch {}
     } finally {
       setLoadingFoodStats(false);
     }
@@ -319,7 +375,7 @@ export function Dashboard() {
 
       if (response.meta?.usedFallback && !fallbackExerciseNoticeShown.current) {
         fallbackExerciseNoticeShown.current = true;
-        Alert.alert('안내', 'AI 운동 추천 서버가 잠시 응답하지 않아 기본 루틴을 보여드려요.');
+        console.log('[Dashboard] AI 운동 추천 서버가 잠시 응답하지 않아 기본 루틴을 사용합니다.');
       }
 
       if (response.success && response.data) {
@@ -362,7 +418,7 @@ export function Dashboard() {
       } else {
         setExerciseRecommendations([]);
         if (response.error) {
-          Alert.alert('알림', response.error);
+          console.log('[Dashboard] 운동 추천 실패:', response.error);
         }
       }
     } catch (error: any) {
@@ -387,29 +443,24 @@ export function Dashboard() {
 
       if (response.meta?.usedFallback && !fallbackDietNoticeShown.current) {
         fallbackDietNoticeShown.current = true;
-        Alert.alert('안내', 'AI 식단 추천 서버가 잠시 응답하지 않아 기본 식단을 보여드려요.');
+        console.log('[Dashboard] AI 식단 추천 서버가 잠시 응답하지 않아 기본 식단을 사용합니다.');
       }
       
-      if (response.success && response.data) {
-        const data = response.data.value || response.data;
-        if (Array.isArray(data) && data.length > 0) {
-          const meals: DietRecommendation[] = data.map((item: any, index: number) => ({
-            id: item.id || `diet_${index}`,
-            name: item.name || '추천 식단',
-            foodKind: item.foodKind || 'LUNCH',
-            calory: parseInt(item.calory) || 0,
-            protein: parseInt(item.protein) || 0,
-            carbohydrate: parseInt(item.carbohydrate) || 0,
-            fat: parseInt(item.fat) || 0,
-          }));
-          setDietRecommendations(meals);
-        } else {
-          setDietRecommendations([]);
-        }
+      if (response.success && Array.isArray(response.data) && response.data.length > 0) {
+        const meals: DietRecommendation[] = response.data.map((item: any, index: number) => ({
+          id: item.id || `diet_${index}`,
+          name: item.name || '추천 식단',
+          foodKind: item.foodKind || 'LUNCH',
+          calory: parseInt(String(item.calory || item.calories || 0)) || 0,
+          protein: parseInt(String(item.protein || 0)) || 0,
+          carbohydrate: parseInt(String(item.carbohydrate || item.carbs || 0)) || 0,
+          fat: parseInt(String(item.fat || 0)) || 0,
+        }));
+        setDietRecommendations(meals);
       } else {
         setDietRecommendations([]);
         if (response.error || response.meta?.reason) {
-          Alert.alert('알림', response.error || response.meta?.reason || '식단 추천에 실패했습니다.');
+          console.log('[Dashboard] 식단 추천 실패:', response.error || response.meta?.reason || '식단 추천에 실패했습니다.');
         }
       }
     } catch (error: any) {
@@ -481,11 +532,27 @@ export function Dashboard() {
           <Text style={styles.date}>{today}</Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.iconButton}>
+          <TouchableOpacity 
+            style={styles.iconButton}
+            onPress={() => {
+              navigation.navigate('마이' as never);
+            }}
+          >
             <Icon name="settings" size={22} color="#6b7280" />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.avatar}>
-            <Text style={styles.avatarText}>김건</Text>
+          <TouchableOpacity 
+            style={styles.avatar}
+            onPress={() => {
+              navigation.navigate('마이' as never);
+            }}
+          >
+            {currentUser?.profileImage ? (
+              <Image source={{ uri: currentUser.profileImage }} style={styles.avatarImage} />
+            ) : (
+              <Text style={styles.avatarText}>
+                {currentUser?.name?.charAt(0)?.toUpperCase() || currentUser?.nickname?.charAt(0)?.toUpperCase() || 'U'}
+              </Text>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -645,33 +712,35 @@ export function Dashboard() {
         <View style={styles.cardContent}>
           {hasWeeklyData ? (
             <>
-              <BarChart
-                data={weeklyChartData}
-                width={screenWidth - 64}
-                height={180}
-                yAxisLabel=""
-                yAxisSuffix=""
-                chartConfig={{
-                  backgroundColor: '#ffffff',
-                  backgroundGradientFrom: '#ffffff',
-                  backgroundGradientTo: '#ffffff',
-                  decimalPlaces: 0,
-                  color: (opacity = 1) => `rgba(99, 102, 241, ${opacity})`,
-                  labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
-                  style: {
-                    borderRadius: 8,
-                  },
-                  propsForBackgroundLines: {
-                    strokeDasharray: '',
-                    stroke: '#e5e7eb',
-                    strokeWidth: 1,
-                  },
-                }}
-                style={styles.chart}
-                showValuesOnTopOfBars={false}
-                withInnerLines={true}
-                fromZero={true}
-              />
+              <View style={styles.chartContainer}>
+                <BarChart
+                  data={weeklyChartData}
+                  width={screenWidth - 120}
+                  height={180}
+                  yAxisLabel=""
+                  yAxisSuffix=""
+                  chartConfig={{
+                    backgroundColor: '#ffffff',
+                    backgroundGradientFrom: '#ffffff',
+                    backgroundGradientTo: '#ffffff',
+                    decimalPlaces: 0,
+                    color: (opacity = 1) => `rgba(99, 102, 241, ${opacity})`,
+                    labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
+                    style: {
+                      borderRadius: 8,
+                    },
+                    propsForBackgroundLines: {
+                      strokeDasharray: '',
+                      stroke: '#e5e7eb',
+                      strokeWidth: 1,
+                    },
+                  }}
+                  style={styles.chart}
+                  showValuesOnTopOfBars={false}
+                  withInnerLines={true}
+                  fromZero={true}
+                />
+              </View>
               <Text style={styles.chartCaption}>
                 이번 주 평균: {weeklyAverageCalories.toLocaleString()}kcal
               </Text>
@@ -885,28 +954,30 @@ export function Dashboard() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#f8fafc',
   },
   contentContainer: {
-    padding: 16,
+    padding: 20,
     paddingBottom: 100,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    paddingTop: 8,
+    marginBottom: 24,
+    paddingTop: 50,
   },
   greeting: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1f2937',
-    marginBottom: 4,
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
+    letterSpacing: -0.5,
   },
   date: {
-    fontSize: 14,
-    color: '#6b7280',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   headerActions: {
     flexDirection: 'row',
@@ -914,47 +985,64 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   iconButton: {
-    padding: 8,
+    padding: 10,
+    borderRadius: 12,
   },
   avatar: {
-    backgroundColor: '#e5e7eb',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
+    backgroundColor: '#e2e8f0',
+    borderRadius: 24,
+    width: 48,
+    height: 48,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   avatarText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1f2937',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 12,
-    marginBottom: 16,
+    borderRadius: 20,
+    marginBottom: 20,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   characterCard: {
-    borderWidth: 2,
+    borderWidth: 2.5,
+    padding: 0,
+    overflow: 'hidden',
   },
   characterContent: {
-    padding: 24,
+    padding: 28,
     alignItems: 'center',
   },
   characterEmoji: {
-    fontSize: 64,
-    marginBottom: 12,
+    fontSize: 72,
+    marginBottom: 16,
   },
   characterMessage: {
-    fontSize: 16,
-    fontWeight: '500',
+    fontSize: 17,
+    fontWeight: '600',
     textAlign: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
+    lineHeight: 24,
   },
   progressInfo: {
     flexDirection: 'row',
@@ -977,10 +1065,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   cardHeader: {
-    padding: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    padding: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#f1f5f9',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -988,15 +1076,16 @@ const styles = StyleSheet.create({
   cardTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   cardTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1f2937',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.3,
   },
   cardContent: {
-    padding: 16,
+    padding: 20,
   },
   inBodyContainer: {
     gap: 16,
@@ -1007,31 +1096,38 @@ const styles = StyleSheet.create({
   },
   inBodyBox: {
     flex: 1,
-    padding: 16,
-    borderRadius: 8,
+    padding: 20,
+    borderRadius: 16,
     alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
   },
   inBodyBoxGray: {
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
   },
   inBodyBoxBlue: {
     backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
   },
   inBodyBoxGreen: {
     backgroundColor: '#f0fdf4',
+    borderColor: '#bbf7d0',
   },
   inBodyBoxOrange: {
     backgroundColor: '#fff7ed',
+    borderColor: '#fed7aa',
   },
   inBodyValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1f2937',
-    marginBottom: 4,
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
   },
   inBodyLabel: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: 13,
+    color: '#64748b',
+    fontWeight: '600',
   },
   updateInfo: {
     flexDirection: 'row',
@@ -1081,14 +1177,19 @@ const styles = StyleSheet.create({
   },
   connectButton: {
     backgroundColor: '#6366f1',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 16,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   connectButtonText: {
     color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 15,
+    fontWeight: '700',
   },
   summaryRow: {
     flexDirection: 'row',
@@ -1097,18 +1198,23 @@ const styles = StyleSheet.create({
   },
   summaryBox: {
     flex: 1,
-    padding: 16,
-    borderRadius: 8,
+    padding: 20,
+    borderRadius: 16,
     alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
   },
   summaryValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 4,
+    fontSize: 26,
+    fontWeight: '700',
+    marginBottom: 6,
+    color: '#0f172a',
   },
   summaryLabel: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: 13,
+    color: '#64748b',
+    fontWeight: '600',
   },
   progressSection: {
     marginTop: 8,
@@ -1131,15 +1237,15 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   progressBarBg: {
-    height: 8,
-    backgroundColor: '#e5e7eb',
-    borderRadius: 4,
+    height: 10,
+    backgroundColor: '#e2e8f0',
+    borderRadius: 8,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
     backgroundColor: '#6366f1',
-    borderRadius: 4,
+    borderRadius: 8,
   },
   caloriesBurned: {
     flexDirection: 'row',
@@ -1152,8 +1258,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#6b7280',
   },
-  chart: {
+  chartContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
     marginVertical: 8,
+  },
+  chart: {
     borderRadius: 8,
   },
   chartCaption: {

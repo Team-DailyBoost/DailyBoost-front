@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -49,6 +50,42 @@ interface FoodEntry {
   source?: 'backend' | 'local';
 }
 
+const LOCAL_FOOD_ENTRIES_KEY = '@foodLogger:localEntries';
+
+async function readLocalFoodEntries(): Promise<FoodEntry[]> {
+  try {
+    const stored = await AsyncStorage.getItem(LOCAL_FOOD_ENTRIES_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((item) => ({
+      ...item,
+      source: 'local' as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function persistLocalFoodEntries(entries: FoodEntry[]) {
+  try {
+    const locals = entries
+      .filter((entry) => entry.source === 'local')
+      .map((entry) => ({
+        id: entry.id,
+        food: entry.food,
+        quantity: entry.quantity,
+        time: entry.time,
+        source: 'local' as const,
+      }));
+    await AsyncStorage.setItem(LOCAL_FOOD_ENTRIES_KEY, JSON.stringify(locals));
+  } catch (error) {
+    console.error('로컬 식단 저장 실패:', error);
+  }
+}
+
 interface Recipe {
   id: string;
   name: string;
@@ -86,6 +123,7 @@ export function FoodLogger() {
   const scrollViewRef = useRef<ScrollView>(null);
   const fallbackFoodNoticeShown = useRef(false);
   const loadTodayFoodsQueueRef = useRef<Promise<void> | null>(null);
+  const loadTodayFoodsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // 레시피 입력 핸들러 메모이제이션 (커서 해제 방지)
   // 한글/영어 입력 시 커서가 해제되지 않도록 즉시 상태 업데이트
@@ -157,7 +195,6 @@ export function FoodLogger() {
           }
         }
       } catch (error) {
-        console.log('⚠️ 로컬 식단 추천 로드 실패:', error);
       }
     })();
   }, []);
@@ -195,7 +232,6 @@ export function FoodLogger() {
         await cacheWeeklyCalories(summary);
       }
     } catch (error) {
-      console.log('⚠️ 주간 식단 데이터 동기화 실패:', error);
     }
   }, []);
 
@@ -207,7 +243,6 @@ export function FoodLogger() {
           await loadTodayFoodsQueueRef.current;
         } catch (error) {
           // 이전 요청이 실패해도 계속 진행
-          console.warn('이전 식단 로드 실패, 새로 시도:', error);
         }
         // 이전 요청이 완료되었으므로 새로 시작
       }
@@ -215,58 +250,52 @@ export function FoodLogger() {
       const loadPromise = (async () => {
         setLoadingTodayFoods(true);
         try {
-          // 타임아웃 설정 (8초)
-          const getLogsPromise = FoodService.getTodayFoodLogs();
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('식단 조회 시간 초과')), 8000)
-          );
-          
-          const res = await Promise.race([getLogsPromise, timeoutPromise]) as any;
+          const res = await FoodService.getTodayFoodLogs() as any;
           
           if (res && res.success && Array.isArray(res.data)) {
-            // 디버깅: 백엔드에서 받은 원본 데이터 확인
-            console.log('📦 백엔드 식단 데이터:', res.data.map((item: any) => ({
-              id: item.id,
-              name: item.name,
-              foodKind: item.foodKind
-            })));
-            
             const normalized = res.data.map((item: any) => normalizeFoodApiItem(item));
-            
-            // 디버깅: 정규화된 데이터 확인
-            console.log('✅ 정규화된 식단 데이터:', normalized.map((item: any) => ({
-              id: item.id,
-              name: item.name,
-              foodKind: item.foodKind
-            })));
-            
             const entries = normalized.map(convertFoodLogToEntry);
-            
-            // 디버깅: 최종 엔트리 확인
-            console.log('🎯 최종 식단 엔트리:', entries.map((entry: any) => ({
-              id: entry.id,
-              name: entry.food.name,
-              foodKind: entry.food.foodKind
-            })));
-            
-            setTodaysFoods(entries);
-            const totals = aggregateDailyTotals(normalized);
-            await cacheTodayTotals(totals);
+            const localEntries = await readLocalFoodEntries();
+            const combined = [...localEntries, ...entries];
+            setTodaysFoods(combined);
+            cacheTotalsForEntries(combined);
           } else {
-            setTodaysFoods([]);
+            // 응답이 없거나 실패한 경우
+            if (res && !res.success) {
+              // 로그인 필요 오류는 조용히 처리 (사용자가 로그인하지 않은 상태일 수 있음)
+              if (res.error && res.error.includes('로그인이 필요')) {
+                console.warn('식단 조회: 로그인이 필요합니다.');
+              } else {
+                console.warn('식단 조회 실패:', res.error || '알 수 없는 오류');
+              }
+            } else if (res && res.data && !Array.isArray(res.data)) {
+              console.warn('식단 조회 응답 형식 오류:', typeof res.data, res.data);
+            }
+            const fallbackLocal = await readLocalFoodEntries();
+            if (fallbackLocal.length > 0) {
+              setTodaysFoods(fallbackLocal);
+              cacheTotalsForEntries(fallbackLocal);
+            } else {
+              setTodaysFoods([]);
+            }
           }
 
           if (syncWeekly) {
             try {
               await refreshWeeklyCalories();
             } catch (weeklyError) {
-              console.warn('주간 식단 동기화 실패:', weeklyError);
               // 주간 동기화 실패해도 계속 진행
             }
           }
-        } catch (error) {
-          console.log('⚠️ 오늘 식단 로드 실패:', error);
-          setTodaysFoods([]);
+        } catch (error: any) {
+          console.error('식단 로드 중 오류:', error?.message || error);
+          const fallbackLocal = await readLocalFoodEntries();
+          if (fallbackLocal.length > 0) {
+            setTodaysFoods(fallbackLocal);
+            cacheTotalsForEntries(fallbackLocal);
+          } else {
+            setTodaysFoods([]);
+          }
         } finally {
           setLoadingTodayFoods(false);
           loadTodayFoodsQueueRef.current = null;
@@ -279,9 +308,12 @@ export function FoodLogger() {
     [convertFoodLogToEntry, refreshWeeklyCalories]
   );
 
-  useEffect(() => {
-    loadTodayFoods({ syncWeekly: true });
-  }, [loadTodayFoods]);
+  // 화면이 포커스를 받을 때마다 최신 데이터 로드
+  useFocusEffect(
+    useCallback(() => {
+      loadTodayFoods({ syncWeekly: true });
+    }, [loadTodayFoods])
+  );
 
   const computeTotals = useCallback((entries: FoodEntry[]) => {
     return entries.reduce(
@@ -346,45 +378,63 @@ export function FoodLogger() {
     };
   };
 
+  // 이미 사용된 foodId를 추적하여 중복 사용 방지
+  const usedFoodIdsRef = useRef<Set<number>>(new Set());
+
   const resolveFoodIdForRecommendation = useCallback(async (meal: RecommendedMeal): Promise<number | null> => {
-    const numericId = Number(meal.id);
-    if (Number.isFinite(numericId) && numericId > 0) {
-      console.log('✅ 추천 식단 ID 사용:', { mealName: meal.name, id: numericId });
-      return numericId;
-    }
-
-    // ID가 없으면 검색하지 않고 null 반환 (로컬 저장으로 대체)
-    // 검색 결과가 잘못된 ID를 반환할 수 있으므로 검색 기능 비활성화
-    console.log('⚠️ 추천 식단 ID 없음, 로컬 저장으로 대체:', { mealName: meal.name, mealId: meal.id });
-    return null;
-
-    // 아래 코드는 주석 처리 (검색 결과가 잘못된 ID를 반환할 수 있음)
-    /*
+    // 백엔드가 추천을 받으면 UNREGISTERED 상태로 Food를 저장하므로
+    // 이름과 foodKind로 검색하여 ID를 찾습니다
+    // 중요: 각 추천 식단마다 정확한 매칭을 위해 이름과 foodKind를 모두 확인합니다
     try {
+      const desiredKind = mealTypeToFoodKind(meal.mealType);
       const res = await FoodService.searchFood(meal.name);
+      
       if (res.success && Array.isArray(res.data)) {
         const normalized = res.data.map((item: any) => normalizeFoodApiItem(item));
-        const desiredKind = mealTypeToFoodKind(meal.mealType);
-
+        
+        // 1. 정확한 매칭: 이름과 foodKind가 일치하고, 아직 사용되지 않은 것
         const exactMatch = normalized.find(
-          log => log.name === meal.name && (log.foodKind ?? '').toUpperCase() === desiredKind
+          log => 
+            log.name === meal.name && 
+            (log.foodKind ?? '').toUpperCase() === desiredKind &&
+            log.id !== null &&
+            !usedFoodIdsRef.current.has(log.id)
         );
-
+        
         if (exactMatch?.id) {
+          usedFoodIdsRef.current.add(exactMatch.id);
           return exactMatch.id;
         }
-
-        const fallback = normalized.find(log => Boolean(log.id));
-        if (fallback?.id) {
-          return fallback.id;
+        
+        // 2. 이름만 일치하고 아직 사용되지 않은 것
+        const nameMatch = normalized.find(
+          log => 
+            log.name === meal.name && 
+            log.id !== null &&
+            !usedFoodIdsRef.current.has(log.id)
+        );
+        
+        if (nameMatch?.id) {
+          usedFoodIdsRef.current.add(nameMatch.id);
+          return nameMatch.id;
+        }
+        
+        // 3. 사용되지 않은 첫 번째 결과 사용
+        const unusedMatch = normalized.find(
+          log => log.id !== null && !usedFoodIdsRef.current.has(log.id)
+        );
+        
+        if (unusedMatch?.id) {
+          usedFoodIdsRef.current.add(unusedMatch.id);
+          return unusedMatch.id;
         }
       }
     } catch (error) {
-      console.log('⚠️ 식단 추천 ID 확인 실패:', error);
+      // 검색 실패 시 null 반환 (로컬 저장으로 대체)
+      console.warn('식단 ID 검색 실패:', error);
     }
 
     return null;
-    */
   }, []);
 
   const handleAddRecommendedMeal = useCallback(
@@ -404,74 +454,53 @@ export function FoodLogger() {
           setTodaysFoods(prev => {
             const next = [entry, ...prev];
             cacheTotalsForEntries(next);
+            persistLocalFoodEntries(next);
             return next;
           });
           removeMealFromRecommendations(meal);
+          unmarkRecommendProcessing(processingKey);
           return;
         }
 
+        // 백엔드에서 추천 시 저장된 Food를 이름과 foodKind로 찾기
         const resolvedId = await resolveFoodIdForRecommendation(meal);
 
         if (resolvedId) {
-          // 디버깅: 등록하려는 식단 정보 확인
-          console.log('📝 식단 등록 시도:', {
-            mealName: meal.name,
-            resolvedId: resolvedId,
-            mealType: meal.mealType
-          });
-          
-          // 타임아웃 설정 (10초)
-          const registerPromise = FoodService.registerFood(resolvedId);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('식단 등록 시간 초과')), 10000)
-          );
-          
-          const res = await Promise.race([registerPromise, timeoutPromise]) as any;
-          
-          // 디버깅: 등록 결과 확인
-          console.log('📝 식단 등록 결과:', res);
+          // 백엔드: POST /api/food/register/{foodId}
+          const res = await FoodService.registerFood(resolvedId) as any;
           
           if (!res || !res.success) {
             throw new Error(res?.error || '식단을 등록하지 못했습니다.');
           }
 
-          // Wait for loadTodayFoods to complete before removing from recommendations
-          // 타임아웃 설정 (5초)
-          const loadPromise = loadTodayFoods({ syncWeekly: true });
-          const loadTimeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('식단 로드 시간 초과')), 5000)
-          );
-          
-          try {
-            await Promise.race([loadPromise, loadTimeoutPromise]);
-          } catch (loadError) {
-            console.warn('식단 로드 실패, 계속 진행:', loadError);
-            // 로드 실패해도 계속 진행
-          }
-          
+          // 백엔드에 저장 완료 후 즉시 오늘 식단 다시 로드
           removeMealFromRecommendations(meal);
+          
+          // 각 식단 등록 후 즉시 로드 (debounce 제거, 각각 즉시 반영)
+          await loadTodayFoods({ syncWeekly: true });
         } else {
+          // ID를 찾지 못한 경우 로컬에만 저장
           const entry = createLocalEntryFromRecommendation(meal);
           setTodaysFoods(prev => {
             const next = [entry, ...prev];
             cacheTotalsForEntries(next);
+            persistLocalFoodEntries(next);
             return next;
           });
           removeMealFromRecommendations(meal);
         }
       } catch (error: any) {
-        console.warn('식단 추천 추가 실패, 로컬 저장으로 대체:', error);
+        // 에러 발생 시에도 로컬에 저장
         const entry = createLocalEntryFromRecommendation(meal);
         setTodaysFoods(prev => {
           const next = [entry, ...prev];
           cacheTotalsForEntries(next);
+          persistLocalFoodEntries(next);
           return next;
         });
         removeMealFromRecommendations(meal);
-        Alert.alert(
-          '임시로 추가됨',
-          `${meal.name}을(를) 로컬에 저장했습니다.\nAI 서버가 복구되면 다시 시도해주세요.`
-        );
+        console.log('[FoodLogger] 식단 등록 실패:', error?.message || '식단을 등록하지 못했습니다.');
+        // 에러는 로그에만 기록하고 사용자에게는 표시하지 않음
       } finally {
         unmarkRecommendProcessing(processingKey);
       }
@@ -496,26 +525,31 @@ export function FoodLogger() {
       setProcessingMealId(entry.id);
       try {
         if (entry.food.apiId) {
+          // 백엔드: POST /api/food/unregister/{foodId}
           const res = await FoodService.unregisterFood(entry.food.apiId);
-          if (!res.success) {
-            throw new Error(res.error || '식단을 삭제하지 못했습니다.');
+          if (!res || !res.success) {
+            throw new Error(res?.error || '식단을 삭제하지 못했습니다.');
           }
+          
+          // 삭제 후 오늘 식단 다시 로드
           await loadTodayFoods({ syncWeekly: true });
-          Alert.alert('삭제됨', `${entry.food.name}을 제거했습니다.`);
         } else {
+          // 로컬 데이터만 있는 경우
           setTodaysFoods(prev => {
             const next = prev.filter(item => item.id !== entry.id);
             cacheTotalsForEntries(next);
+            persistLocalFoodEntries(next);
             return next;
           });
         }
       } catch (error: any) {
-        console.error('식단 삭제 실패:', error);
+        // 에러 발생 시에도 로컬에서 제거
         setTodaysFoods(prev => {
           const next = prev.filter(item => item.id !== entry.id);
           cacheTotalsForEntries(next);
           return next;
         });
+        
         Alert.alert(
           '오류',
           error?.message
@@ -563,13 +597,12 @@ export function FoodLogger() {
         };
         
         setRecommendedRecipes([newRecipe]);
-        Alert.alert('성공', '레시피 추천을 받았습니다!');
+        // 성공 시 사용자에게 표시하지 않음 (자동으로 표시됨)
       } else {
-        Alert.alert('알림', response.error || '레시피 추천에 실패했습니다.');
+        console.log('[FoodLogger] 레시피 추천 실패:', response.error || '레시피 추천에 실패했습니다.');
       }
     } catch (error: any) {
-      console.error('레시피 추천 오류:', error);
-      Alert.alert('오류', `레시피 추천 중 오류가 발생했습니다.\n${error.message || error}`);
+      console.log('[FoodLogger] 레시피 추천 중 오류:', error.message || error);
     } finally {
       setLoadingRecommendations(false);
       setRecipeInput('');
@@ -591,43 +624,40 @@ export function FoodLogger() {
       }
 
       const response = await FoodService.getFoodRecommendations();
-      const rawData = Array.isArray((response as any)?.data?.value)
-        ? (response as any).data.value
-        : (response as any)?.data;
+      
+      if (!response.success) {
+        console.log('[FoodLogger] 식단 추천 실패:', response.error || '식단 추천에 실패했습니다.');
+        return;
+      }
+
+      const rawData = Array.isArray(response.data) ? response.data : [];
       const normalized = normalizeFoodRecommendations(rawData);
 
       setIsFallbackRecommendations(Boolean(response.meta?.usedFallback));
 
       if (response.meta?.usedFallback && !fallbackFoodNoticeShown.current) {
         fallbackFoodNoticeShown.current = true;
-        Alert.alert(
-          '안내',
-          'AI 식단 추천 서버가 잠시 응답하지 않아 기본 추천을 보여드려요.'
-        );
+        console.log('[FoodLogger] AI 식단 추천 서버가 잠시 응답하지 않아 기본 추천을 사용합니다.');
       }
 
-      if (response.success) {
-        setRecommendedMeals(normalized);
-        await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
+      setRecommendedMeals(normalized);
+      await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
+      
+      // 새로운 추천을 받았으므로 사용된 ID 추적 초기화
+      usedFoodIdsRef.current.clear();
 
-        if (normalized.length > 0) {
-          Alert.alert('성공', '식단 추천을 받았습니다!');
-        } else {
-          Alert.alert('알림', '추천할 식단이 없습니다. 헬스 정보를 다시 확인해주세요.');
-        }
-      } else {
-        Alert.alert('알림', response.error || response.meta?.reason || '식단 추천에 실패했습니다.');
+      if (normalized.length === 0) {
+        console.log('[FoodLogger] 추천할 식단이 없습니다.');
       }
     } catch (error: any) {
-      console.error('식단 추천 오류:', error);
-      Alert.alert('오류', `식단 추천 중 오류가 발생했습니다.\n${error.message || error}`);
+      console.log('[FoodLogger] 식단 추천 중 오류:', error.message || error);
     } finally {
       setLoadingRecommendations(false);
     }
   };
 
-  // Record Tab Component
-  const RecordTab = () => (
+  // Record Tab Render Function (컴포넌트 아님)
+  const renderRecordTab = () => (
     <>
       {/* Total Calories Summary */}
       <View style={styles.card}>
@@ -697,8 +727,8 @@ export function FoodLogger() {
     </>
   );
 
-  // Track Tab Component
-  const TrackTab = () => {
+  // Track Tab Render Function (컴포넌트 아님)
+  const renderTrackTab = () => {
     const macroRatio = {
       protein: (currentTotals.protein / (currentTotals.protein + currentTotals.carbs + currentTotals.fat)) * 100,
       carbs: (currentTotals.carbs / (currentTotals.protein + currentTotals.carbs + currentTotals.fat)) * 100,
@@ -802,8 +832,8 @@ export function FoodLogger() {
     );
   };
 
-  // Recommend Tab Component
-  const RecommendTab = () => (
+  // Recommend Tab Render Function (컴포넌트 아님)
+  const renderRecommendTab = () => (
     <>
       <View style={styles.card}>
         <View style={styles.cardHeader}>
@@ -832,40 +862,73 @@ export function FoodLogger() {
                 <Text style={styles.emptyText}>아직 추천된 식단이 없습니다</Text>
                 <Text style={styles.emptySubtext}>오른쪽 상단의 새로고침 버튼을 눌러 식단을 받아보세요</Text>
               </View>
-            ) : (
-              recommendedMeals.map((meal) => (
-                <View key={meal.id} style={styles.mealSection}>
-                  <Text style={styles.mealTitle}>{meal.name}</Text>
-                  <Text style={styles.mealFood}>{meal.description}</Text>
-                  <Text style={styles.mealCalories}>약 {meal.calories}kcal</Text>
-                  <View style={styles.mealMacros}>
-                    <View style={styles.macroIndicator}>
-                      <View style={[styles.macroDotSmall, { backgroundColor: '#4CAF50' }]} />
-                      <Text style={styles.macroText}>P: {meal.protein}g</Text>
-                    </View>
-                    <View style={styles.macroIndicator}>
-                      <View style={[styles.macroDotSmall, { backgroundColor: '#2196F3' }]} />
-                      <Text style={styles.macroText}>C: {meal.carbs}g</Text>
-                    </View>
-                    <View style={styles.macroIndicator}>
-                      <View style={[styles.macroDotSmall, { backgroundColor: '#FF9800' }]} />
-                      <Text style={styles.macroText}>F: {meal.fat}g</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.addMealButton}
-                    onPress={() => handleAddRecommendedMeal(meal)}
-                    disabled={Boolean(processingRecommendIds[meal.id || meal.name])}
-                  >
-                    {processingRecommendIds[meal.id || meal.name] ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.addMealButtonText}>+ 추가하기</Text>
-                    )}
-                  </TouchableOpacity>
+            ) : (() => {
+              // 아침/점심/저녁별로 그룹화
+              const mealsByType = {
+                breakfast: recommendedMeals.filter(m => m.mealType === 'breakfast'),
+                lunch: recommendedMeals.filter(m => m.mealType === 'lunch'),
+                dinner: recommendedMeals.filter(m => m.mealType === 'dinner'),
+              };
+
+              const mealTypeLabels = {
+                breakfast: { label: '🌅 아침', color: '#FF9800' },
+                lunch: { label: '🌞 점심', color: '#2196F3' },
+                dinner: { label: '🌙 저녁', color: '#9C27B0' },
+              };
+
+              return (
+                <View style={styles.mealPlan}>
+                  {(['breakfast', 'lunch', 'dinner'] as const).map((mealType) => {
+                    const meals = mealsByType[mealType];
+                    if (meals.length === 0) return null;
+
+                    const typeInfo = mealTypeLabels[mealType];
+
+                    return (
+                      <View key={mealType} style={styles.mealTypeGroup}>
+                        <View style={styles.mealTypeHeader}>
+                          <Text style={[styles.mealTypeLabel, { color: typeInfo.color }]}>
+                            {typeInfo.label}
+                          </Text>
+                        </View>
+                        {meals.map((meal) => (
+                          <View key={meal.id} style={styles.mealSection}>
+                            <Text style={styles.mealTitle}>{meal.name}</Text>
+                            <Text style={styles.mealFood}>{meal.description}</Text>
+                            <Text style={styles.mealCalories}>약 {meal.calories}kcal</Text>
+                            <View style={styles.mealMacros}>
+                              <View style={styles.macroIndicator}>
+                                <View style={[styles.macroDotSmall, { backgroundColor: '#4CAF50' }]} />
+                                <Text style={styles.macroText}>P: {meal.protein}g</Text>
+                              </View>
+                              <View style={styles.macroIndicator}>
+                                <View style={[styles.macroDotSmall, { backgroundColor: '#2196F3' }]} />
+                                <Text style={styles.macroText}>C: {meal.carbs}g</Text>
+                              </View>
+                              <View style={styles.macroIndicator}>
+                                <View style={[styles.macroDotSmall, { backgroundColor: '#FF9800' }]} />
+                                <Text style={styles.macroText}>F: {meal.fat}g</Text>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.addMealButton}
+                              onPress={() => handleAddRecommendedMeal(meal)}
+                              disabled={Boolean(processingRecommendIds[meal.id || meal.name])}
+                            >
+                              {processingRecommendIds[meal.id || meal.name] ? (
+                                <ActivityIndicator size="small" color="#FFFFFF" />
+                              ) : (
+                                <Text style={styles.addMealButtonText}>+ 추가하기</Text>
+                              )}
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    );
+                  })}
                 </View>
-              ))
-            )}
+              );
+            })()}
           </View>
         </View>
       </View>
@@ -898,10 +961,9 @@ export function FoodLogger() {
     });
   }, [handleAddRecommendedMeal]);
 
-  // AI Recipe Tab Component
-  const AIRecipeTab = () => {
-    return (
-      <>
+  // AI Recipe Tab Render Function (컴포넌트 아님)
+  const renderAIRecipeTab = () => (
+    <>
         {/* 입력 섹션 */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
@@ -933,7 +995,6 @@ export function FoodLogger() {
                 textContentType="none"
                 autoCorrect={false}
                 autoCapitalize="none"
-                editable={!loadingRecommendations}
                 selectTextOnFocus={false}
                 importantForAutofill="no"
                 underlineColorAndroid="transparent"
@@ -1064,9 +1125,8 @@ export function FoodLogger() {
             </View>
           )
         )}
-      </>
-    );
-  };
+    </>
+  );
 
   return (
     <View style={styles.container}>
@@ -1109,10 +1169,10 @@ export function FoodLogger() {
           showsVerticalScrollIndicator={true}
           nestedScrollEnabled={true}
         >
-          {activeTab === 'record' && <RecordTab />}
-          {activeTab === 'track' && <TrackTab />}
-          {activeTab === 'recommend' && <RecommendTab />}
-          {activeTab === 'ai' && <AIRecipeTab key="ai-recipe-tab" />}
+          {activeTab === 'record' && renderRecordTab()}
+          {activeTab === 'track' && renderTrackTab()}
+          {activeTab === 'recommend' && renderRecommendTab()}
+          {activeTab === 'ai' && renderAIRecipeTab()}
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -1122,57 +1182,72 @@ export function FoodLogger() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#f8fafc',
   },
   header: {
     padding: 20,
-    paddingTop: 48,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    paddingTop: 50,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 0,
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
   },
   headerContent: {
     alignItems: 'center',
   },
   headerTitle: {
     fontSize: 28,
-    fontWeight: 'bold',
-    color: '#2B2B2B',
-    marginBottom: 4,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
+    letterSpacing: -0.5,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: '#9E9E9E',
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '500',
   },
   tabContainer: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 20,
+    paddingTop: 16,
     paddingBottom: 16,
-    gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    gap: 10,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#e2e8f0',
   },
   tab: {
     flex: 1,
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 20,
+    borderRadius: 16,
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
   },
   activeTab: {
-    backgroundColor: '#2B2B2B',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   tabText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#9E9E9E',
+    color: '#64748b',
   },
   activeTabText: {
-    color: '#FFFFFF',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   keyboardAvoidingView: {
     flex: 1,
@@ -1184,11 +1259,15 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    marginBottom: 20,
+    borderWidth: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -1196,20 +1275,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
     paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#f1f5f9',
   },
   refreshButton: {
-    padding: 8,
+    padding: 10,
+    borderRadius: 12,
   },
   cardTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#2B2B2B',
+    color: '#0f172a',
+    letterSpacing: -0.3,
   },
   cardSubtitle: {
     fontSize: 14,
-    color: '#9E9E9E',
+    color: '#64748b',
+    fontWeight: '500',
   },
   cardContent: {
     padding: 20,
@@ -1217,11 +1299,16 @@ const styles = StyleSheet.create({
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F9F9F9',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   searchIcon: {
     marginRight: 12,
@@ -1240,24 +1327,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#F9F9F9',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
+    padding: 18,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   foodInfo: {
     flex: 1,
   },
   foodName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#2B2B2B',
-    marginBottom: 4,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
   },
   foodServing: {
     fontSize: 13,
-    color: '#9E9E9E',
+    color: '#64748b',
+    fontWeight: '500',
   },
   foodNutrition: {
     flexDirection: 'row',
@@ -1434,8 +1528,21 @@ const styles = StyleSheet.create({
     color: '#2B2B2B',
   },
   mealPlan: {
-    gap: 16,
+    gap: 20,
     marginBottom: 20,
+  },
+  mealTypeGroup: {
+    marginBottom: 16,
+  },
+  mealTypeHeader: {
+    marginBottom: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: '#E0E0E0',
+  },
+  mealTypeLabel: {
+    fontSize: 18,
+    fontWeight: '700',
   },
   mealSection: {
     padding: 20,
@@ -1443,6 +1550,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#E0E0E0',
+    marginBottom: 12,
   },
   mealTitle: {
     fontSize: 17,
