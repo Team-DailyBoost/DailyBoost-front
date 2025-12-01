@@ -287,20 +287,15 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         setHealthFlagKey(healthKey);
         currentProviderRef.current = null;
 
-        // 식단 추천은 비동기로 처리하고 타임아웃 설정
+        // 식단 추천은 비동기로 처리
         const foodPromise = (async () => {
           try {
             console.log('[Login] 식단 추천 요청 시작');
-            const recommendations = await Promise.race([
-              getFoodRecommendations(),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('식단 추천 요청 타임아웃')), 10000),
-              ),
-            ]);
-          const normalized = normalizeFoodRecommendations(recommendations);
-          await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
+            const recommendations = await getFoodRecommendations();
+            const normalized = normalizeFoodRecommendations(recommendations);
+            await AsyncStorage.setItem('@foodRecommendations', JSON.stringify(normalized));
             console.log('[Login] 식단 추천 저장 완료');
-        } catch (foodError) {
+          } catch (foodError) {
             console.error('[Login] 식단 추천 요청 실패:', foodError);
             // 식단 추천 실패해도 로그인은 계속 진행
           }
@@ -1149,20 +1144,6 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
                       `);
                     }
                   }, 200);
-                  
-                  // 타임아웃 설정
-                  if (postMessageTimeoutRef.current) {
-                    clearTimeout(postMessageTimeoutRef.current);
-                  }
-                  postMessageTimeoutRef.current = setTimeout(() => {
-                    if (!handledAuthRef.current) {
-                      console.error('[Login] 토큰을 받지 못했습니다 (5초 타임아웃)');
-                      setShowWebView(false);
-                      setWebViewLoading(false);
-                      setLoading(false);
-                      Alert.alert('로그인 실패', '로그인 응답을 받지 못했습니다. 다시 시도해주세요.');
-                    }
-                  }, 5000);
                 }
               }
             }}
