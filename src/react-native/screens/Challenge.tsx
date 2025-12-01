@@ -46,23 +46,6 @@ interface Challenge extends ChallengeResponse {
   reps?: number;
 }
 
-// 로컬 챌린지 인터페이스 (백엔드 동기화 전용)
-interface LocalChallenge {
-  id: string;
-  title: string;
-  description: string;
-  duration: string;
-  participants: number;
-  reward: string;
-  progress: number;
-  isJoined: boolean;
-  type: 'weekly' | 'monthly' | 'daily' | 'competition' | 'exercise';
-  exp?: number;
-  exerciseType?: string;
-  sets?: number;
-  reps?: number;
-}
-
 const TIER_THRESHOLDS = {
   bronze: 0,
   silver: 1000,
@@ -93,7 +76,6 @@ export function Challenge() {
   const [certificationNote, setCertificationNote] = useState('');
   const [isSubmittingCertification, setIsSubmittingCertification] = useState(false);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
-  const [localChallenges, setLocalChallenges] = useState<LocalChallenge[]>([]); // 로컬 챌린지
   const [loadingChallenges, setLoadingChallenges] = useState(false);
   const [isCreatingChallenge, setIsCreatingChallenge] = useState(false);
   const [customChallenge, setCustomChallenge] = useState({
@@ -113,7 +95,6 @@ export function Challenge() {
   useEffect(() => {
     loadUserProgress();
     loadChallenges();
-    loadLocalChallenges();
   }, []);
 
   // 화면이 포커스될 때마다 챌린지 목록 새로고침
@@ -182,6 +163,13 @@ export function Challenge() {
       
       setChallenges(convertedChallenges);
       console.log('[Challenge] 백엔드 챌린지 변환 완료:', convertedChallenges.length, '개');
+      console.log('[Challenge] 변환된 챌린지 상세:', convertedChallenges.map(c => ({
+        id: c.id,
+        title: c.title,
+        isJoined: c.isJoined,
+        startDate: c.startDate,
+        endDate: c.endDate
+      })));
     } catch (error: any) {
       console.error('[Challenge] 백엔드 챌린지 로드 실패:', error?.message || error);
       
@@ -193,18 +181,6 @@ export function Challenge() {
       // 에러 발생 시 빈 배열 유지 (기존 챌린지는 유지)
     } finally {
       setLoadingChallenges(false);
-    }
-  };
-
-  // 로컬 챌린지 로드 (백엔드 동기화 전용)
-  const loadLocalChallenges = async () => {
-    try {
-      const saved = await AsyncStorage.getItem(`localChallenges_${userId}`);
-      if (saved) {
-        setLocalChallenges(JSON.parse(saved));
-      }
-    } catch (error) {
-      console.log('[Challenge] 로컬 챌린지 로드 실패:', error);
     }
   };
 
@@ -233,15 +209,6 @@ export function Challenge() {
       }
     } catch (error) {
       console.error('[Challenge] 참가 챌린지 ID 저장 실패:', error);
-    }
-  };
-
-  // 로컬 챌린지 저장
-  const saveLocalChallenges = async (challengeList: LocalChallenge[]) => {
-    try {
-      await AsyncStorage.setItem(`localChallenges_${userId}`, JSON.stringify(challengeList));
-    } catch (error) {
-      console.log('[Challenge] 로컬 챌린지 저장 실패:', error);
     }
   };
 
@@ -601,8 +568,8 @@ export function Challenge() {
             )}
 
             <Card style={styles.card}>
-              <Text style={styles.cardTitle}>참여 중인 챌린지</Text>
-              {challenges.filter(c => c.isJoined).length === 0 && localChallenges.filter(c => c.isJoined).length === 0 ? (
+              <Text style={styles.cardTitle}>참여 중인 챌린지 ({challenges.filter(c => c.isJoined).length}개)</Text>
+              {challenges.filter(c => c.isJoined).length === 0 ? (
                 <Text style={styles.emptyText}>참여 중인 챌린지가 없습니다</Text>
               ) : (
                 <>
@@ -640,47 +607,13 @@ export function Challenge() {
                       </View>
                     </TouchableOpacity>
                   ))}
-                  {localChallenges.filter(c => c.isJoined).map(challenge => (
-                    <TouchableOpacity
-                      key={challenge.id}
-                      style={styles.challengeCard}
-                      activeOpacity={0.85}
-                      onPress={() => openChallengeInfo(challenge as any)}
-                    >
-                      <View style={styles.challengeHeader}>
-                        <Text style={styles.challengeTitle}>{challenge.title}</Text>
-                        <Badge>{challenge.duration}</Badge>
-                      </View>
-                      <Text style={styles.challengeDesc}>{challenge.description}</Text>
-                      {challenge.exerciseType && (
-                        <Text style={styles.challengeExercise}>
-                          {challenge.sets}세트 × {challenge.reps}회
-                        </Text>
-                      )}
-                      <ProgressBar progress={challenge.progress} color="#007AFF" />
-                      <View style={styles.challengeFooter}>
-                        <View style={styles.participantRow}>
-                          <Icon name="users" size={14} color="#64748b" />
-                          <Text style={styles.challengeParticipants}>
-                            {challenge.participants.toLocaleString()}명 참여
-                          </Text>
-                        </View>
-                        <View style={styles.rewardRow}>
-                          <Icon name="award" size={14} color="#f59e0b" />
-                          <Text style={styles.challengeReward}>
-                            {challenge.exp && `+${challenge.exp} EXP`}
-                          </Text>
-                        </View>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
                 </>
               )}
             </Card>
 
             <Card style={styles.card}>
-              <Text style={styles.cardTitle}>새로운 챌린지</Text>
-              {challenges.filter(c => !c.isJoined).length === 0 && localChallenges.filter(c => !c.isJoined).length === 0 ? (
+              <Text style={styles.cardTitle}>새로운 챌린지 ({challenges.filter(c => !c.isJoined).length}개)</Text>
+              {challenges.filter(c => !c.isJoined).length === 0 ? (
                 <Text style={styles.emptyText}>새로운 챌린지가 없습니다</Text>
               ) : (
                 <>
@@ -712,44 +645,6 @@ export function Challenge() {
                     </TouchableOpacity>
                   </View>
                 </View>
-                  ))}
-                  {localChallenges.filter(c => !c.isJoined).map(challenge => (
-                    <View key={challenge.id} style={styles.challengeCard}>
-                      <View style={styles.challengeHeader}>
-                        <Text style={styles.challengeTitle}>{challenge.title}</Text>
-                        <Badge>{challenge.duration}</Badge>
-                      </View>
-                      <Text style={styles.challengeDesc}>{challenge.description}</Text>
-                      {challenge.exerciseType && (
-                        <Text style={styles.challengeExercise}>
-                          매일 {challenge.exerciseType}: {challenge.sets}세트 × {challenge.reps}회
-                        </Text>
-                      )}
-                      <View style={styles.challengeFooter}>
-                        <View style={styles.rewardRow}>
-                          <Icon name="award" size={14} color="#f59e0b" />
-                          <Text style={styles.challengeReward}>
-                            {challenge.exp && `+${challenge.exp} EXP`}
-                          </Text>
-                        </View>
-                        <TouchableOpacity
-                          style={styles.joinButton}
-                          onPress={() => {
-                            const updatedLocal = localChallenges.map(item =>
-                              item.id === challenge.id 
-                                ? { ...item, isJoined: true, participants: item.participants + 1 }
-                                : item
-                            );
-                            setLocalChallenges(updatedLocal);
-                            saveLocalChallenges(updatedLocal);
-                            Alert.alert('완료', '챌린지에 참여했습니다!');
-                          }}
-                          activeOpacity={0.7}
-                        >
-                          <Text style={styles.joinButtonText}>참여하기</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
                   ))}
                 </>
               )}

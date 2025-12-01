@@ -66,6 +66,7 @@ interface CompetitionEntry {
   verified: boolean; // 사진 인증 완료 여부
   month: string; // 참가 월 (YYYY-MM)
   isWinner?: boolean; // 우승자 여부
+  postId?: number; // 백엔드 게시글 ID
 }
 
 interface CompetitionInfo {
@@ -536,52 +537,82 @@ export function Community() {
     setUserProfileImages(imageMap);
   };
 
-  // 월별 대회 시스템 초기화
+  // 월별 대회 시스템 초기화 및 백엔드에서 대회 목록 로드
   useEffect(() => {
     (async () => {
       const currentMonth = getCurrentMonth();
       const { startDate, endDate } = getCompetitionPeriod(currentMonth);
       
       try {
-        const savedCompetitionInfo = await AsyncStorage.getItem('competitionInfo');
-        let info: CompetitionInfo;
-        
-        if (savedCompetitionInfo) {
-          info = JSON.parse(savedCompetitionInfo);
-          // 저장된 대회가 현재 월과 다르면 새로 시작
-          if (info.currentMonth !== currentMonth) {
-            info = {
-              currentMonth,
-              startDate,
-              endDate,
-              isActive: true,
-            };
-            await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
-          }
-        } else {
-          info = {
-            currentMonth,
-            startDate,
-            endDate,
-            isActive: true,
-          };
-          await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
-        }
-        
+        // 대회 정보 설정
+        const info: CompetitionInfo = {
+          currentMonth,
+          startDate,
+          endDate,
+          isActive: true,
+        };
         setCompetitionInfo(info);
         
-        // 현재 월의 대회 참가자만 필터링
-        const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-        if (savedCompetition) {
-          const allEntries: CompetitionEntry[] = JSON.parse(savedCompetition);
-          const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
-          setCompetitionEntries(currentMonthEntries);
-        }
+        // 백엔드에서 대회 게시글 가져오기
+        await loadCompetitionPosts();
       } catch (error) {
         console.log('[Competition] 대회 정보 초기화 실패:', error);
       }
     })();
   }, []);
+
+  // 백엔드에서 대회 게시글 로드
+  const loadCompetitionPosts = async () => {
+    try {
+      const { getPosts } = await import('../../api/posts');
+      const competitionPosts = await getPosts('COMPETITION');
+      
+      console.log('[Competition] 백엔드 대회 게시글 로드:', competitionPosts.length, '개');
+      
+      // Post를 CompetitionEntry로 변환
+      const currentMonth = getCurrentMonth();
+      const entries: CompetitionEntry[] = competitionPosts
+        .filter(post => {
+          // 제목에서 종목과 체급 정보 추출
+          // 형식: "{종목} - {체급}" 또는 "{종목}"
+          return post.title && post.title.includes('피지크') || post.title.includes('클래식');
+        })
+        .map((post, index) => {
+          // 제목에서 종목 추출
+          const isClassic = post.title.includes('클래식');
+          const isPhysique = post.title.includes('피지크');
+          const category = isClassic ? 'classic' : (isPhysique ? 'physique' : 'classic');
+          
+          // 체급 정보 추출 (제목에서)
+          const weightClassMatch = post.title.match(/(\d+cm\s*(이하|초과)?)/);
+          const weightClass = weightClassMatch ? weightClassMatch[0] : '미지정';
+          
+          return {
+            id: `competition_${post.id}`,
+            userId: post.authorName || 'unknown',
+            userName: post.authorName || '사용자',
+            userHeight: 0, // 백엔드에서 가져올 수 없음
+            userWeight: 0, // 백엔드에서 가져올 수 없음
+            category: category as 'classic' | 'physique',
+            weightClass,
+            images: [], // PostsResponse에는 이미지 정보가 없음 (필요시 getPost로 상세 정보 가져오기)
+            votes: post.likeCount || 0,
+            votedBy: [], // 백엔드에서 가져올 수 없음
+            submittedAt: post.createdAt || new Date().toISOString(),
+            verified: true,
+            month: currentMonth,
+            isWinner: false,
+            postId: post.id, // 백엔드 게시글 ID 저장
+          };
+        });
+      
+      setCompetitionEntries(entries);
+    } catch (error) {
+      console.error('[Competition] 백엔드 대회 게시글 로드 실패:', error);
+      // 에러 발생 시 빈 배열로 설정
+      setCompetitionEntries([]);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -620,17 +651,7 @@ export function Community() {
           }
         }
 
-        // 월별 대회 필터링은 위의 useEffect에서 처리
-        const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-        if (savedCompetition && isMounted) {
-          const allEntries: CompetitionEntry[] = JSON.parse(savedCompetition);
-          const currentMonth = getCurrentMonth();
-          const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
-          setCompetitionEntries(currentMonthEntries);
-          
-          // 월말 우승자 자동 선정 체크
-          await checkAndSelectWinner(currentMonth, allEntries);
-        }
+        // 대회 목록은 백엔드에서 로드 (loadCompetitionPosts에서 처리)
         
         const currentUserId = userId;
         const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
@@ -1268,112 +1289,70 @@ export function Community() {
     }
   };
 
-  // 투표 기능 (중복 투표 방지)
-  const handleVote = async (entryId: string) => {
+  // 투표 기능 (백엔드 좋아요 기능 사용)
+  const handleVote = async (entry: CompetitionEntry) => {
     if (!userId || userId === 'user@example.com') {
       Alert.alert('알림', '로그인이 필요합니다.');
       return;
     }
 
+    if (!entry.postId) {
+      Alert.alert('오류', '게시글 ID가 없습니다.');
+      return;
+    }
+
     try {
-      // 전체 참가자 목록 로드
-      const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-      const allEntries: CompetitionEntry[] = savedCompetition ? JSON.parse(savedCompetition) : [];
+      const { likePost, unlikePost } = await import('../../api/posts');
       
-      // 현재 월 필터링
-      const currentMonth = getCurrentMonth();
-      const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
+      // 이미 좋아요를 눌렀는지 확인 (로컬 상태 기준)
+      const hasVoted = entry.votedBy.includes(userId);
       
-      const updated = currentMonthEntries.map(entry => {
-        if (entry.id === entryId) {
-          const hasVoted = entry.votedBy.includes(userId);
-          
-          // 중복 투표 방지
-          if (!hasVoted && entry.votedBy.length > 0 && entry.votedBy.includes(userId)) {
-            return entry; // 이미 투표했으면 변경하지 않음
-          }
-          
-          return {
-            ...entry,
-            votes: hasVoted ? entry.votes - 1 : entry.votes + 1,
-            votedBy: hasVoted
-              ? entry.votedBy.filter(id => id !== userId)
-              : [...entry.votedBy, userId],
-          };
-        }
-        return entry;
-      });
+      if (hasVoted) {
+        // 좋아요 취소
+        await unlikePost(entry.postId);
+      } else {
+        // 좋아요
+        await likePost(entry.postId);
+      }
       
-      // 전체 목록 업데이트
-      const updatedAllEntries = allEntries.map(entry => {
-        if (entry.month === currentMonth) {
-          const updatedEntry = updated.find(e => e.id === entry.id);
-          return updatedEntry || entry;
-        }
-        return entry;
-      });
-      
-      // 저장
-      await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
-      setCompetitionEntries(updated);
-      
-      // 월말 우승자 선정 체크 (매월 마지막 날 자정에 자동 실행)
-      await checkAndSelectWinner(currentMonth, updatedAllEntries);
-    } catch (error) {
+      // 대회 목록 새로고침
+      await loadCompetitionPosts();
+    } catch (error: any) {
       console.error('[Competition] 투표 실패:', error);
-      Alert.alert('오류', '투표 처리 중 오류가 발생했습니다.');
+      Alert.alert('오류', error?.message || '투표 처리 중 오류가 발생했습니다.');
     }
   };
 
-  // 월말 우승자 선정 로직
-  const checkAndSelectWinner = async (month: string, allEntries: CompetitionEntry[]) => {
+  // 월말 우승자 선정 로직 (백엔드 데이터 기반)
+  const checkAndSelectWinner = async () => {
     try {
       const now = new Date();
-      const [year, monthNum] = month.split('-').map(Number);
+      const currentMonth = getCurrentMonth();
+      const [year, monthNum] = currentMonth.split('-').map(Number);
       const lastDay = new Date(year, monthNum, 0).getDate();
       const isLastDay = now.getDate() === lastDay;
       
       // 매월 마지막 날이거나 그 이후인 경우 우승자 선정
       if (isLastDay || now.getDate() > lastDay) {
-        // 각 종목별로 우승자 선정
-        const classicEntries = allEntries
-          .filter(e => e.month === month && e.category === 'classic')
+        // 각 종목별로 우승자 선정 (좋아요 수 기준)
+        const classicEntries = competitionEntries
+          .filter(e => e.category === 'classic')
           .sort((a, b) => b.votes - a.votes);
-        const physiqueEntries = allEntries
-          .filter(e => e.month === month && e.category === 'physique')
+        const physiqueEntries = competitionEntries
+          .filter(e => e.category === 'physique')
           .sort((a, b) => b.votes - a.votes);
-        
-        // 우승자 업데이트
-        if (classicEntries.length > 0) {
-          const classicWinner = { ...classicEntries[0], isWinner: true };
-          const updatedAllEntries = allEntries.map(entry => 
-            entry.id === classicWinner.id ? classicWinner : entry
-          );
-          await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
-        }
-        
-        if (physiqueEntries.length > 0) {
-          const physiqueWinner = { ...physiqueEntries[0], isWinner: true };
-          const updatedAllEntries = allEntries.map(entry => 
-            entry.id === physiqueWinner.id ? physiqueWinner : entry
-          );
-          await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
-        }
         
         // 대회 정보 업데이트
-        const savedCompetitionInfo = await AsyncStorage.getItem('competitionInfo');
-        if (savedCompetitionInfo) {
-          const info: CompetitionInfo = JSON.parse(savedCompetitionInfo);
-          if (info.currentMonth === month) {
-            // 현재 선택된 종목의 우승자 표시
-            const winner = competitionCategory === 'classic' 
-              ? classicEntries[0] 
-              : physiqueEntries[0];
-            if (winner) {
-              info.winner = winner;
-              await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
-              setCompetitionInfo(info);
-            }
+        if (competitionInfo) {
+          const winner = competitionCategory === 'classic' 
+            ? classicEntries[0] 
+            : physiqueEntries[0];
+          if (winner) {
+            const updatedInfo = {
+              ...competitionInfo,
+              winner: { ...winner, isWinner: true },
+            };
+            setCompetitionInfo(updatedInfo);
           }
         }
       }
@@ -2080,7 +2059,7 @@ export function Community() {
                         styles.voteButton,
                         entry.votedBy.includes(userId) && styles.voteButtonActive,
                       ]}
-                      onPress={() => handleVote(entry.id)}
+                      onPress={() => handleVote(entry)}
                     >
                       <Text style={[
                         styles.voteButtonText,
@@ -2757,17 +2736,6 @@ export function Community() {
                       return;
                     }
                     
-                    // 월별 대회 중복 참가 확인
-                    const currentMonth = getCurrentMonth();
-                    const alreadyParticipated = competitionEntries.some(
-                      entry => entry.userId === userId && entry.month === currentMonth && entry.category === selectedCompetitionCategory
-                    );
-                    
-                    if (alreadyParticipated) {
-                      Alert.alert('알림', '이미 이번 달 대회에 참가하셨습니다.');
-                      return;
-                    }
-                    
                     // 체급 정보 가져오기
                     const weightClass = getWeightClass(selectedCompetitionCategory);
                     if (!weightClass) {
@@ -2775,44 +2743,49 @@ export function Community() {
                       return;
                     }
                     
-                    // 새로운 참가자 추가
-                    const newEntry: CompetitionEntry = {
-                      id: `entry_${Date.now()}_${userId}`,
-                      userId: userId,
-                      userName: currentUser.nickname || currentUser.name || '사용자',
-                      userHeight: currentUser.height ?? 0,
-                      userWeight: currentUser.weight ?? 0,
-                      category: selectedCompetitionCategory,
-                      weightClass: weightClass.name,
-                      images: competitionImages,
-                      votes: 0,
-                      votedBy: [],
-                      submittedAt: new Date().toISOString(),
-                      verified: true, // 사진 인증 완료
-                      month: currentMonth,
-                      isWinner: false,
-                    };
-                    
-                    // 기존 모든 참가자 로드
+                    // 백엔드에 대회 게시글 생성
                     try {
-                      const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-                      const allEntries: CompetitionEntry[] = savedCompetition ? JSON.parse(savedCompetition) : [];
+                      const { createPost } = await import('../../api/posts');
                       
-                      // 새 참가자 추가
-                      allEntries.push(newEntry);
-                      await AsyncStorage.setItem('competitionEntries', JSON.stringify(allEntries));
+                      const categoryName = selectedCompetitionCategory === 'classic' ? '클래식 피지크' : '피지크';
+                      const title = `${categoryName} - ${weightClass.name}`;
+                      const content = `체급: ${weightClass.name}\n제한 무게: ${weightClass.weightLimit}kg 이하\n신장: ${currentUser.height}cm\n체중: ${currentUser.weight}kg`;
                       
-                      // 현재 월의 참가자만 필터링하여 상태 업데이트
-                      const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
-                      setCompetitionEntries(currentMonthEntries);
+                      // 이미지를 PostImageUpload 형식으로 변환
+                      const postImages = competitionImages.map((uri, index) => ({
+                        uri,
+                        name: `competition_${Date.now()}_${index}.jpg`,
+                        type: 'image/jpeg',
+                      }));
+                      
+                      const response = await createPost(
+                        {
+                          title,
+                          content,
+                          postKind: 'COMPETITION',
+                        },
+                        postImages
+                      );
+                      
+                      console.log('[Competition] 대회 참가 신청 성공:', response);
+                      
+                      // 대회 목록 새로고침
+                      await loadCompetitionPosts();
                       
                       Alert.alert('완료', '대회 참가 신청이 완료되었습니다!');
                       setShowCompetitionModal(false);
                       setCompetitionImages([]);
                       setSelectedCompetitionCategory('classic');
-                    } catch (error) {
+                    } catch (error: any) {
                       console.error('[Competition] 참가 신청 실패:', error);
-                      Alert.alert('오류', '참가 신청 처리 중 오류가 발생했습니다.');
+                      const errorMessage = error?.message || '참가 신청 처리 중 오류가 발생했습니다.';
+                      
+                      // 중복 참가 확인
+                      if (errorMessage.includes('같은 제목의 게시글이 존재합니다')) {
+                        Alert.alert('알림', '이미 이번 달 대회에 참가하셨습니다.');
+                      } else {
+                        Alert.alert('오류', errorMessage);
+                      }
                     }
                   }}
                 />

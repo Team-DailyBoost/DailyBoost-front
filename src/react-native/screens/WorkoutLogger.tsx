@@ -359,7 +359,7 @@ export function WorkoutLogger() {
     { id: 'legs', name: '하체', icon: 'activity' },
     { id: 'biceps', name: '이두', icon: 'zap' },
     { id: 'triceps', name: '삼두', icon: 'flame' },
-    { id: 'cardio', name: '유산소', icon: 'wind' },
+    { id: 'cardio', name: '유산소', icon: 'trending-up' },
   ];
 
 const BODY_PART_LABELS: Record<string, string> = bodyParts.reduce((acc, part) => {
