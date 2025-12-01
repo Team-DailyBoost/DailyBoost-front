@@ -205,6 +205,9 @@ export async function createPost(
       cookieValue = `JSESSIONID=${cookieValue}`;
     }
     headers['Cookie'] = cookieValue;
+  } else {
+    // 토큰과 쿠키가 모두 없으면 에러
+    throw new Error('인증 정보가 없습니다. 로그인 후 다시 시도해주세요.');
   }
 
   // 백엔드 기대 형식: multipart/form-data
@@ -350,17 +353,49 @@ export async function createPost(
   // 백엔드 응답 형식: Api<MessageResponse>
   // Api { errorCode: 200, value: MessageResponse { message: string } }
   // 또는 에러 시: Api { errorCode: xxx, description: string }
+  // WebViewManager는 status >= 400일 때도 resolve로 반환하므로 주의 필요
   
-  // 에러 처리
+  // 에러 처리 (우선순위: status > errorCode > error 속성)
   if (response && typeof response === 'object') {
-    // status가 400 이상이면 에러
-    if ('status' in response && (response as any).status >= 400) {
+    // 1. status가 400 이상이면 에러 (가장 우선)
+    if ('status' in response && typeof (response as any).status === 'number' && (response as any).status >= 400) {
       let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
       
       // 백엔드 에러 메시지 파싱
-      if ((response as any).status === 400) {
+      const status = (response as any).status;
+      const responseText = JSON.stringify(response);
+      
+      if (status === 400) {
         // 400 Bad Request: validation 실패 또는 제목 중복
-        const responseText = JSON.stringify(response);
+        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
+          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
+        } else if (responseText.includes('NotBlank') || responseText.includes('NotNull')) {
+          errorMsg = '제목, 내용, 게시글 종류를 모두 입력해주세요.';
+        } else if (responseText.includes('Size')) {
+          errorMsg = '제목은 최대 100자, 내용은 최대 1000자까지 가능합니다.';
+        } else if (responseText.includes('validation') || responseText.includes('Validation')) {
+          errorMsg = '입력한 내용을 확인해주세요.';
+        }
+      } else if (status === 401 || status === 403) {
+        errorMsg = '인증이 필요합니다. 로그인 후 다시 시도해주세요.';
+      } else if (status === 500) {
+        // 500 Internal Server Error: 서버 오류
+        errorMsg = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
+      }
+      
+      console.log('[CREATE_POST] status >= 400 에러:', { status, message: errorMsg, response });
+      throw new Error(errorMsg);
+    }
+    
+    // 2. errorCode가 있고 200이 아니면 에러
+    if ('errorCode' in response && typeof (response as any).errorCode === 'number' && (response as any).errorCode !== 200) {
+      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      
+      // 백엔드 에러 메시지 파싱
+      const errorCode = (response as any).errorCode;
+      const responseText = JSON.stringify(response);
+      
+      if (errorCode === 400) {
         if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
           errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
         } else if (responseText.includes('NotBlank') || responseText.includes('NotNull')) {
@@ -368,39 +403,15 @@ export async function createPost(
         } else if (responseText.includes('Size')) {
           errorMsg = '제목은 최대 100자, 내용은 최대 1000자까지 가능합니다.';
         }
-      } else if ((response as any).status === 500) {
-        // 500 Internal Server Error: 서버 오류
-        // 백엔드에서 발생할 수 있는 문제:
-        // 1. Post 엔티티의 comments 리스트가 초기화되지 않음
-        // 2. User를 찾을 수 없음
-        // 3. 파일 저장 실패
-        // 4. DB 연결 문제
-        errorMsg = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
       }
       
-      console.log('[CREATE_POST] status >= 400 에러:', { status: (response as any).status, message: errorMsg });
+      console.log('[CREATE_POST] errorCode != 200 에러:', { errorCode, message: errorMsg, response });
       throw new Error(errorMsg);
     }
     
-    // errorCode가 있고 200이 아니면 에러
-    if ('errorCode' in response && (response as any).errorCode !== 200) {
-      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
-      
-      // 백엔드 에러 메시지 파싱
-      if ((response as any).errorCode === 400) {
-        const responseText = JSON.stringify(response);
-        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
-          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
-        }
-      }
-      
-      console.log('[CREATE_POST] errorCode != 200 에러:', { errorCode: (response as any).errorCode, message: errorMsg });
-      throw new Error(errorMsg);
-    }
-    
-    // error 속성이 true이면 에러
+    // 3. error 속성이 true이면 에러
     if ((response as any).error === true) {
-      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
+      let errorMsg = (response as any).description || (response as any).message || '게시글 작성에 실패했습니다.';
       
       // 백엔드 에러 메시지 파싱
       const responseText = JSON.stringify(response);
@@ -408,115 +419,31 @@ export async function createPost(
         errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
       }
       
-      console.log('[CREATE_POST] error === true 에러:', { message: errorMsg });
+      console.log('[CREATE_POST] error === true 에러:', { message: errorMsg, response });
       throw new Error(errorMsg);
     }
     
-    // 성공: value 속성이 있으면 ApiResponse 래퍼
-    if ('value' in response) {
-      console.log('[CREATE_POST] 성공 (value 속성):', response.value);
-      return (response as any).value as MessageResponse;
+    // 성공 응답 처리
+    // 백엔드 Api 래퍼 형식: { errorCode: 200, value: { message: string } }
+    if ('value' in response && (response as any).value) {
+      const value = (response as any).value;
+      // value가 MessageResponse 형식인지 확인
+      if (typeof value === 'object' && ('message' in value || typeof value === 'string')) {
+        console.log('[CREATE_POST] 성공 (value 속성):', value);
+        return typeof value === 'string' ? { message: value } : value as MessageResponse;
+      }
     }
     
     // message 속성이 있고 error가 없으면 MessageResponse 직접
-    if ('message' in response && !('error' in response)) {
+    if ('message' in response && typeof (response as any).message === 'string' && !('error' in response) && !('status' in response)) {
       console.log('[CREATE_POST] 성공 (message 직접):', response);
       return response as MessageResponse;
     }
   }
 
-  console.log('[CREATE_POST] 성공 (응답 직접 반환):', response);
-  return response as MessageResponse;
-
-  // 디버깅: 응답 로깅
-  console.log('[CREATE_POST] API 응답 받음:', {
-    responseType: typeof response,
-    isObject: typeof response === 'object',
-    hasStatus: response && typeof response === 'object' && 'status' in response,
-    hasErrorCode: response && typeof response === 'object' && 'errorCode' in response,
-    hasError: response && typeof response === 'object' && 'error' in response,
-    hasResponse: !!response,
-    hasValue: response && typeof response === 'object' && 'value' in response,
-    responseKeys: response && typeof response === 'object' ? Object.keys(response) : [],
-    responsePreview: typeof response === 'object' ? JSON.stringify(response).substring(0, 500) : String(response).substring(0, 500),
-  });
-
-  // 백엔드 응답 형식: Api<MessageResponse>
-  // Api { errorCode: 200, value: MessageResponse { message: string } }
-  // 또는 에러 시: Api { errorCode: xxx, description: string }
-  
-  // 에러 처리
+  // 응답이 예상과 다를 경우
   if (response && typeof response === 'object') {
-    // status가 400 이상이면 에러
-    if ('status' in response && (response as any).status >= 400) {
-      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
-      
-      // 백엔드 에러 메시지 파싱
-      if ((response as any).status === 400) {
-        // 400 Bad Request: validation 실패 또는 제목 중복
-        const responseText = JSON.stringify(response);
-        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
-          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
-        } else if (responseText.includes('NotBlank') || responseText.includes('NotNull')) {
-          errorMsg = '제목, 내용, 게시글 종류를 모두 입력해주세요.';
-        } else if (responseText.includes('Size')) {
-          errorMsg = '제목은 최대 100자, 내용은 최대 1000자까지 가능합니다.';
-        }
-      } else if ((response as any).status === 500) {
-        // 500 Internal Server Error: 서버 오류
-        // 백엔드에서 발생할 수 있는 문제:
-        // 1. Post 엔티티의 comments 리스트가 초기화되지 않음
-        // 2. User를 찾을 수 없음
-        // 3. 파일 저장 실패
-        // 4. DB 연결 문제
-        errorMsg = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
-      }
-      
-      console.log('[CREATE_POST] status >= 400 에러:', { status: (response as any).status, message: errorMsg });
-      throw new Error(errorMsg);
-    }
-    
-    // errorCode가 있고 200이 아니면 에러
-    if ('errorCode' in response && (response as any).errorCode !== 200) {
-      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
-      
-      // 백엔드 에러 메시지 파싱
-      if ((response as any).errorCode === 400) {
-        const responseText = JSON.stringify(response);
-        if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
-          errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
-        }
-      }
-      
-      console.log('[CREATE_POST] errorCode != 200 에러:', { errorCode: (response as any).errorCode, message: errorMsg });
-      throw new Error(errorMsg);
-    }
-    
-    // error 속성이 true이면 에러
-    if ((response as any).error === true) {
-      let errorMsg = (response as any).description || (response as any).message || (response as any).error || '게시글 작성에 실패했습니다.';
-      
-      // 백엔드 에러 메시지 파싱
-      const responseText = JSON.stringify(response);
-      if (responseText.includes('같은 제목의 게시글이 존재합니다')) {
-        errorMsg = '내 게시글에 같은 제목의 게시글이 이미 존재합니다.';
-      }
-      
-      console.log('[CREATE_POST] error === true 에러:', { message: errorMsg });
-      throw new Error(errorMsg);
-    }
-    
-    // 성공: value 속성이 있으면 ApiResponse 래퍼
-    if ('value' in response) {
-      console.log('[CREATE_POST] 성공 (value 속성):', response.value);
-      return (response as any).value as MessageResponse;
-    }
-    
-    // message 속성이 있고 error가 없으면 MessageResponse 직접
-    if ('message' in response && !('error' in response)) {
-      console.log('[CREATE_POST] 성공 (message 직접):', response);
-      return response as MessageResponse;
-    }
+    console.warn('[CREATE_POST] 예상하지 못한 응답 형식:', response);
   }
 
   console.log('[CREATE_POST] 성공 (응답 직접 반환):', response);

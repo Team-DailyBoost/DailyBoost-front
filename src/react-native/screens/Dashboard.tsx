@@ -127,53 +127,53 @@ export function Dashboard() {
   const getCharacterState = () => {
     if (exerciseProgress >= 100) {
       return {
-        emoji: '💪',
-        body: '💪😁💪',
+        icon: 'award' as const,
         message: '완벽해요! 오늘의 목표를 달성했어요!',
         mood: 'excellent',
         bgColor: '#dcfce7',
         borderColor: '#86efac',
-        textColor: '#16a34a'
+        textColor: '#16a34a',
+        iconColor: '#16a34a'
       };
     } else if (exerciseProgress >= 75) {
       return {
-        emoji: '😊',
-        body: '🙋‍♂️',
+        icon: 'trending-up' as const,
         message: '조금만 더 힘내세요! 거의 다 왔어요!',
         mood: 'good',
         bgColor: '#dbeafe',
         borderColor: '#93c5fd',
-        textColor: '#2563eb'
+        textColor: '#2563eb',
+        iconColor: '#2563eb'
       };
     } else if (exerciseProgress >= 50) {
       return {
-        emoji: '😐',
-        body: '🚶‍♂️',
+        icon: 'activity' as const,
         message: '절반 완료! 꾸준히 이어가세요!',
         mood: 'okay',
         bgColor: '#fef3c7',
         borderColor: '#fde047',
-        textColor: '#ca8a04'
+        textColor: '#ca8a04',
+        iconColor: '#ca8a04'
       };
     } else if (exerciseProgress >= 25) {
       return {
-        emoji: '😔',
-        body: '🤷‍♂️',
+        icon: 'target' as const,
         message: '아직 시작이에요. 조금씩 움직여보세요!',
         mood: 'low',
         bgColor: '#fed7aa',
         borderColor: '#fdba74',
-        textColor: '#ea580c'
+        textColor: '#ea580c',
+        iconColor: '#ea580c'
       };
     } else {
       return {
-        emoji: '😴',
-        body: '🛌',
+        icon: 'zap' as const,
         message: '오늘도 화이팅! 작은 움직임부터 시작해요!',
         mood: 'sleepy',
         bgColor: '#f3f4f6',
         borderColor: '#d1d5db',
-        textColor: '#6b7280'
+        textColor: '#6b7280',
+        iconColor: '#6b7280'
       };
     }
   };
@@ -367,11 +367,11 @@ export function Dashboard() {
         return;
       }
 
-      // 운동 추천 API 호출
-      const userInput = `집에서 할 수 있는 운동을 30분 동안 추천해줘.`;
-      const level = 'INTERMEDIATE';
+      // 운동 추천 API 호출 (운동 시간과 컨디션 기반)
+      const exerciseTime = 30; // 30분
+      const condition = 'NORMAL'; // 컨디션 상태
       
-      const response = await WorkoutService.getExerciseRecommendation(userInput, level, 'HOME_TRAINING');
+      const response = await WorkoutService.getExerciseRecommendation(exerciseTime, condition);
 
       if (response.meta?.usedFallback && !fallbackExerciseNoticeShown.current) {
         fallbackExerciseNoticeShown.current = true;
@@ -528,7 +528,10 @@ export function Dashboard() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.greeting}>안녕하세요! 👋</Text>
+          <View style={styles.greetingContainer}>
+            <Icon name="sun" size={20} color="#6366f1" style={{ marginRight: 8 }} />
+            <Text style={styles.greeting}>안녕하세요!</Text>
+          </View>
           <Text style={styles.date}>{today}</Text>
         </View>
         <View style={styles.headerActions}>
@@ -563,7 +566,9 @@ export function Dashboard() {
         { backgroundColor: character.bgColor, borderColor: character.borderColor }
       ]}>
         <View style={styles.characterContent}>
-          <Text style={styles.characterEmoji}>{character.body}</Text>
+          <View style={[styles.characterIconContainer, { backgroundColor: character.bgColor }]}>
+            <Icon name={character.icon} size={56} color={character.iconColor} />
+          </View>
           <Text style={[styles.characterMessage, { color: character.textColor }]}>
             {character.message}
           </Text>
@@ -861,8 +866,12 @@ export function Dashboard() {
                   </View>
                 )}
                 {exercise.youtubeLink ? (
-                  <TouchableOpacity onPress={() => openExerciseVideo(exercise.youtubeLink)}>
-                    <Text style={styles.recommendationLink}>🎬 시연 영상 보기</Text>
+                  <TouchableOpacity 
+                    style={styles.videoLinkButton}
+                    onPress={() => openExerciseVideo(exercise.youtubeLink)}
+                  >
+                    <Icon name="play-circle" size={16} color="#6366f1" />
+                    <Text style={styles.recommendationLink}>시연 영상 보기</Text>
                   </TouchableOpacity>
                 ) : null}
               </View>
@@ -903,16 +912,19 @@ export function Dashboard() {
             </View>
           ) : dietRecommendations.length > 0 ? (
             dietRecommendations.map((meal) => {
-              const mealTypeEmoji = meal.foodKind === 'BREAKFAST' ? '🌅' : 
-                                   meal.foodKind === 'LUNCH' ? '🌞' : '🌙';
+              const mealTypeIcon = meal.foodKind === 'BREAKFAST' ? 'sunrise' : 
+                                   meal.foodKind === 'LUNCH' ? 'sun' : 'moon';
               const mealTypeName = meal.foodKind === 'BREAKFAST' ? '아침' : 
                                   meal.foodKind === 'LUNCH' ? '점심' : '저녁';
               
               return (
                 <View key={meal.id} style={styles.recommendationItem}>
                   <View style={styles.recommendationHeader}>
+                    <View style={styles.mealTypeIconContainer}>
+                      <Icon name={mealTypeIcon as any} size={18} color="#6366f1" />
+                    </View>
                     <Text style={styles.recommendationTitle}>
-                      {mealTypeEmoji} {meal.name}
+                      {meal.name}
                     </Text>
                     <Text style={styles.mealTypeText}>{mealTypeName}</Text>
                   </View>
@@ -954,25 +966,30 @@ export function Dashboard() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#f1f5f9',
   },
   contentContainer: {
-    padding: 20,
+    padding: 24,
     paddingBottom: 100,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
-    paddingTop: 50,
+    marginBottom: 28,
+    paddingTop: 60,
+    paddingHorizontal: 4,
+  },
+  greetingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
   },
   greeting: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 32,
+    fontWeight: '900',
     color: '#0f172a',
-    marginBottom: 6,
-    letterSpacing: -0.5,
+    letterSpacing: -0.8,
   },
   date: {
     fontSize: 15,
@@ -1015,27 +1032,47 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 20,
-    marginBottom: 20,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  characterCard: {
-    borderWidth: 2.5,
-    padding: 0,
+    borderRadius: 28,
+    marginBottom: 24,
+    padding: 24,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
     overflow: 'hidden',
   },
+  characterCard: {
+    borderWidth: 3,
+    padding: 0,
+    overflow: 'hidden',
+    borderRadius: 28,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    elevation: 12,
+  },
   characterContent: {
-    padding: 28,
+    padding: 32,
     alignItems: 'center',
   },
-  characterEmoji: {
-    fontSize: 72,
-    marginBottom: 16,
+  characterIconContainer: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 8,
+    borderWidth: 3,
+    borderColor: '#ffffff',
   },
   characterMessage: {
     fontSize: 17,

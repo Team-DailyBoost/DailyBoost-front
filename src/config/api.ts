@@ -23,7 +23,7 @@ export const API_CONFIG = {
     // Food endpoints
     FOOD_TODAY: '/api/food/today',  // GET /api/food/today
     FOOD_WEEKLY: '/api/food/weekly',  // GET /api/food/weekly
-    FOOD_RECOMMEND: '/api/food/recommend',  // GET /api/food/recommend (인증 필요, body 없음)
+    FOOD_RECOMMEND: '/api/food/recommend',  // POST /api/food/recommend (인증 필요, body 없음)
     FOOD_RECIPE_RECOMMEND: '/api/food/recipe/recommend',  // POST /api/food/recipe/recommend (인증 필요, body: RecipeRequest)
     FOOD_SEARCH: '/api/food',  // GET /api/food?keyword=...
     FOOD_REGISTER: '/api/food/register',  // POST /api/food/register/{foodId}
@@ -31,7 +31,7 @@ export const API_CONFIG = {
     FOOD_RESET: '/api/food/reset',  // POST /api/food/reset
     
     // Exercise endpoints
-    EXERCISE_REGISTER: '/api/exercise/register',  // POST /api/exercise/register
+    EXERCISE_REGISTER: '/api/exercise/register',  // POST /api/exercise/register/{exerciseId} - exerciseId는 경로에 포함
     EXERCISE_RECOMMEND: '/api/exercise/recommend',  // GET /api/exercise/recommend (⚠️ @RequestBody 있음 - 비표준)
     
     // AI/Gemini endpoints
@@ -78,10 +78,10 @@ export const API_CONFIG = {
     DASHBOARD_STATS: '/api/dashboard/stats',
     WEEKLY_STATS: '/api/dashboard/weekly',
     
-    // Challenge endpoints (may not exist in backend)
-    GET_CHALLENGES: '/api/challenge/list',
-    JOIN_CHALLENGE: '/api/challenge/join',
-    GET_CHALLENGE_PROGRESS: '/api/challenge/progress',
+    // Challenge endpoints
+    CREATE_CHALLENGE: '/api/challenges',  // POST /api/challenges
+    JOIN_CHALLENGE: '/api/challenges',  // POST /api/challenges/{challengeId}/join
+    GET_CHALLENGES: '/api/challenges/all',  // GET /api/challenges/all
     
     // InBody endpoints (may not exist in backend)
     SYNC_INBODY: '/api/inbody/sync',

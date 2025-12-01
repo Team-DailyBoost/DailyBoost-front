@@ -68,6 +68,7 @@ export async function requestWithWebViewFallback<T = any>(
   // Spring Boot가 @RequestBody를 받으려면 Content-Type이 application/json이어야 함
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json;charset=utf-8';
+    headers['Accept'] = 'application/json';
   }
 
   // JWT 토큰 확인 (우선) - getAccessToken 사용하여 통일된 로직 적용

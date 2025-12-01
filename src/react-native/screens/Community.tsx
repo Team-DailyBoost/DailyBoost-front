@@ -15,7 +15,8 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api, API_CONFIG } from '../../services/api';
 import { createPost, updatePost, deletePost, getPost, PostKind, PostCreateRequest } from '../../api/posts';
-import { createComment, deleteComment } from '../../api/comments';
+import { createComment } from '../../api/comments';
+import { Feather as Icon } from '@expo/vector-icons';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -62,6 +63,17 @@ interface CompetitionEntry {
   votes: number;
   votedBy: string[];
   submittedAt: string;
+  verified: boolean; // 사진 인증 완료 여부
+  month: string; // 참가 월 (YYYY-MM)
+  isWinner?: boolean; // 우승자 여부
+}
+
+interface CompetitionInfo {
+  currentMonth: string; // 현재 대회 월 (YYYY-MM)
+  startDate: string; // 대회 시작일
+  endDate: string; // 대회 종료일
+  isActive: boolean; // 대회 진행 여부
+  winner?: CompetitionEntry; // 이달의 우승자
 }
 
 const POST_KIND_CATEGORY_MAP: Record<string, string> = {
@@ -78,6 +90,29 @@ const CATEGORY_POST_KIND_MAP: Record<string, PostKind> = {
 
 const COMMUNITY_CATEGORY_ORDER = ['운동', '음식', '식단'];
 const COMMUNITY_CATEGORY_FILTERS = ['전체', ...COMMUNITY_CATEGORY_ORDER];
+
+// 대회 종목별 설명
+const COMPETITION_CATEGORY_DESCRIPTIONS: Record<'classic' | 'physique', string> = {
+  classic: '클래식 피지크: 근육량과 대칭성을 중심으로 평가하는 클래식 바디빌딩 스타일',
+  physique: '피지크: 선명한 근육 라인과 균형잡힌 체형 미를 평가하는 현대적 바디빌딩 스타일',
+};
+
+// 현재 월 가져오기 (YYYY-MM 형식)
+const getCurrentMonth = (): string => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
+// 대회 기간 확인 (매월 1일부터 마지막 날까지)
+const getCompetitionPeriod = (yearMonth: string): { startDate: string; endDate: string } => {
+  const [year, month] = yearMonth.split('-').map(Number);
+  const startDate = `${yearMonth}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const endDate = `${yearMonth}-${String(lastDay).padStart(2, '0')}`;
+  return { startDate, endDate };
+};
 
 const resolveImageUrl = (input?: string | null): string | null => {
   if (!input) return null;
@@ -336,6 +371,8 @@ export function Community() {
   });
   const [competitionCategory, setCompetitionCategory] = useState<'classic' | 'physique'>('classic');
   const [competitionEntries, setCompetitionEntries] = useState<CompetitionEntry[]>([]);
+  const [competitionInfo, setCompetitionInfo] = useState<CompetitionInfo | null>(null);
+  const [selectedCompetitionCategory, setSelectedCompetitionCategory] = useState<'classic' | 'physique'>('classic'); // 참가 신청 시 선택한 종목
   const [following, setFollowing] = useState<string[]>([]);
   const [showPostDetailModal, setShowPostDetailModal] = useState(false);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
@@ -499,6 +536,53 @@ export function Community() {
     setUserProfileImages(imageMap);
   };
 
+  // 월별 대회 시스템 초기화
+  useEffect(() => {
+    (async () => {
+      const currentMonth = getCurrentMonth();
+      const { startDate, endDate } = getCompetitionPeriod(currentMonth);
+      
+      try {
+        const savedCompetitionInfo = await AsyncStorage.getItem('competitionInfo');
+        let info: CompetitionInfo;
+        
+        if (savedCompetitionInfo) {
+          info = JSON.parse(savedCompetitionInfo);
+          // 저장된 대회가 현재 월과 다르면 새로 시작
+          if (info.currentMonth !== currentMonth) {
+            info = {
+              currentMonth,
+              startDate,
+              endDate,
+              isActive: true,
+            };
+            await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
+          }
+        } else {
+          info = {
+            currentMonth,
+            startDate,
+            endDate,
+            isActive: true,
+          };
+          await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
+        }
+        
+        setCompetitionInfo(info);
+        
+        // 현재 월의 대회 참가자만 필터링
+        const savedCompetition = await AsyncStorage.getItem('competitionEntries');
+        if (savedCompetition) {
+          const allEntries: CompetitionEntry[] = JSON.parse(savedCompetition);
+          const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
+          setCompetitionEntries(currentMonthEntries);
+        }
+      } catch (error) {
+        console.log('[Competition] 대회 정보 초기화 실패:', error);
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
     (async () => {
@@ -536,8 +620,17 @@ export function Community() {
           }
         }
 
+        // 월별 대회 필터링은 위의 useEffect에서 처리
         const savedCompetition = await AsyncStorage.getItem('competitionEntries');
-        if (savedCompetition && isMounted) setCompetitionEntries(JSON.parse(savedCompetition));
+        if (savedCompetition && isMounted) {
+          const allEntries: CompetitionEntry[] = JSON.parse(savedCompetition);
+          const currentMonth = getCurrentMonth();
+          const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
+          setCompetitionEntries(currentMonthEntries);
+          
+          // 월말 우승자 자동 선정 체크
+          await checkAndSelectWinner(currentMonth, allEntries);
+        }
         
         const currentUserId = userId;
         const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
@@ -588,7 +681,7 @@ export function Community() {
           const resolvedImages = Array.isArray(postData.imageUrls)
             ? postData.imageUrls
                 .map((url: string) => resolveImageUrl(url))
-                .filter((url): url is string => Boolean(url))
+                .filter((url: string | null): url is string => Boolean(url))
             : selectedPost.imageUrls;
           // 백엔드 PostResponse에 authorId가 없으므로, 게시글 작성 시 저장한 정보 사용
           // 또는 게시글 목록에서 가져온 authorId 사용 (목록에도 없지만 변환 시 'unknown'으로 설정됨)
@@ -691,6 +784,22 @@ export function Community() {
           }
         });
         
+        // 로컬 댓글도 추가 (서버 댓글과 병합)
+        try {
+          const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
+          if (savedComments) {
+            const parsed: Comment[] = JSON.parse(savedComments);
+            const localComments = parsed.filter(comment => isLocalComment(comment.id));
+            localComments.forEach(comment => {
+              if (!uniqueComments.has(comment.id)) {
+                uniqueComments.set(comment.id, comment);
+              }
+            });
+          }
+        } catch (e) {
+          // 로컬 댓글 로드 실패 시 무시
+        }
+        
         setComments(Array.from(uniqueComments.values()));
       } else if (commentInfosMap.size > 0) {
         // CommentResponse 조회 실패 시 CommentInfo만 사용
@@ -700,6 +809,19 @@ export function Community() {
           ...info,
           imageUrl: null, // CommentInfo에는 이미지가 없음
         }));
+        
+        // 로컬 댓글도 추가 (서버 댓글과 병합)
+        try {
+          const savedComments = await AsyncStorage.getItem(`comments_${postId}`);
+          if (savedComments) {
+            const parsed: Comment[] = JSON.parse(savedComments);
+            const localComments = parsed.filter(comment => isLocalComment(comment.id));
+            transformedComments.push(...localComments);
+          }
+        } catch (e) {
+          // 로컬 댓글 로드 실패 시 무시
+        }
+        
         setComments(transformedComments);
       } else {
         // 로컬 저장소에서 댓글 가져오기
@@ -739,55 +861,33 @@ export function Community() {
       return;
     }
 
-    try {
-      const commentFile = commentImage ? {
-        uri: commentImage.uri,
-        name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
-        type: commentImage.mimeType || 'image/jpeg',
-      } : undefined;
-
-      await createComment({
-        postId: Number(selectedPost.id),
-        content: newComment.trim() || '',
-      }, commentFile);
-      await loadComments(selectedPost.id);
-      
-      // 게시글 상세 정보 업데이트 (댓글 수 반영)
+    // 로컬 게시글인지 확인 (local- 접두사로 판별)
+    if (String(selectedPost.id).startsWith('local-')) {
+      // 로컬 게시글은 로컬에서만 댓글 저장 (API 요청 없음)
       try {
-        const { getPost } = await import('../../api/posts');
-        const postDetail = await getPost(Number(selectedPost.id));
-        if (postDetail) {
-          const updatedPost: Post = {
-            ...selectedPost,
-            comments: postDetail.commentCount || selectedPost.comments + 1,
-          };
-          setSelectedPost(updatedPost);
-          
-          const updatedPosts = posts.map(post => {
-            if (post.id === selectedPost.id) {
-              return updatedPost;
-            }
-            return post;
-          });
-          setPosts(updatedPosts);
-          await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-        } else {
-          // 404 에러로 null 반환된 경우, 로컬에서 댓글 수 증가
-          const updatedPosts = posts.map(post => {
-            if (post.id === selectedPost.id) {
-              return { ...post, comments: (post.comments || 0) + 1 };
-            }
-            return post;
-          });
-          setPosts(updatedPosts);
-          setSelectedPost({
-            ...selectedPost,
-            comments: (selectedPost.comments || 0) + 1,
-          });
-        }
-      } catch (refreshError: any) {
-        // 에러 발생 시에도 로컬에서 댓글 수 증가
-        console.warn('게시글 상세 조회 실패, 로컬에서 댓글 수 증가:', refreshError?.message);
+        const localCommentId = `local-comment-${Date.now()}`;
+        const now = new Date().toISOString();
+        const authorName = currentUser?.nickname || currentUser?.name || '익명';
+        const authorProfileImage = currentUser?.profileImage || currentUser?.profileImageUrl || null;
+        
+        const localComment: Comment = {
+          id: localCommentId,
+          postId: selectedPost.id,
+          author: authorName,
+          authorId: String(userId),
+          content: newComment.trim() || '',
+          time: formatPostDate(now),
+          likes: 0,
+          likedBy: [],
+          imageUrl: commentImage ? commentImage.uri : null,
+        };
+        
+        // 기존 댓글에 추가 (상태 먼저 업데이트)
+        const currentComments = comments || [];
+        const updatedComments = [localComment, ...currentComments];
+        setComments(updatedComments);
+        
+        // 게시글 댓글 수 증가
         const updatedPosts = posts.map(post => {
           if (post.id === selectedPost.id) {
             return { ...post, comments: (post.comments || 0) + 1 };
@@ -799,16 +899,126 @@ export function Community() {
           ...selectedPost,
           comments: (selectedPost.comments || 0) + 1,
         });
+        
+        setNewComment('');
+        setCommentImage(null);
+        
+        // AsyncStorage 저장은 백그라운드에서 처리
+        Promise.all([
+          AsyncStorage.setItem(`comments_${selectedPost.id}`, JSON.stringify(updatedComments)),
+          AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts))
+        ]).catch(err => {
+          console.log('[Community] 로컬 댓글 저장 실패:', err);
+        });
+        
+        console.log('[Community] 로컬 게시글에 로컬 댓글 저장 완료:', localCommentId);
+      } catch (error: any) {
+        console.log('[Community] 로컬 댓글 저장 중 오류:', error);
       }
+      return;
+    }
+
+    // 서버 게시글은 서버에 댓글 작성 요청
+    try {
+      const commentFile = commentImage ? {
+        uri: commentImage.uri,
+        name: commentImage.fileName || `comment-${Date.now()}.${commentImage.mimeType?.split('/')?.[1] ?? 'jpg'}`,
+        type: commentImage.mimeType || 'image/jpeg',
+      } : undefined;
+
+      await createComment({
+        postId: Number(selectedPost.id),
+        content: newComment.trim() || '',
+      }, commentFile);
+      
+      // 댓글 수 즉시 증가 (UI 반응성 향상)
+      const updatedPosts = posts.map(post => {
+        if (post.id === selectedPost.id) {
+          return { ...post, comments: (post.comments || 0) + 1 };
+        }
+        return post;
+      });
+      setPosts(updatedPosts);
+      setSelectedPost({
+        ...selectedPost,
+        comments: (selectedPost.comments || 0) + 1,
+      });
       
       setNewComment('');
       setCommentImage(null);
-      Alert.alert('완료', '댓글이 작성되었습니다.');
+      
+      // 댓글 목록 업데이트와 AsyncStorage 저장은 백그라운드에서 처리
+      Promise.all([
+        loadComments(selectedPost.id),
+        AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts))
+      ]).catch(() => {});
     } catch (error: any) {
-      const errorMsg = String(error?.message || '댓글 작성에 실패했습니다.');
-      console.log('[Community] 댓글 작성 실패:', errorMsg);
-      // 에러는 로그에만 기록하고 사용자에게는 표시하지 않음
+      // 서버 저장 실패 시 로컬에 저장
+      console.log('[Community] 댓글 작성 서버 저장 실패, 로컬에 저장합니다');
+      try {
+        if (!selectedPost) return;
+        
+        const localCommentId = `local-comment-${Date.now()}`;
+        const now = new Date().toISOString();
+        const authorName = currentUser?.nickname || currentUser?.name || '익명';
+        const authorProfileImage = currentUser?.profileImage || currentUser?.profileImageUrl || null;
+        
+        const localComment: Comment = {
+          id: localCommentId,
+          postId: selectedPost.id,
+          author: authorName,
+          authorId: String(userId),
+          content: newComment.trim() || '',
+          time: formatPostDate(now),
+          likes: 0,
+          likedBy: [],
+          imageUrl: commentImage ? commentImage.uri : null,
+        };
+        
+        // 기존 댓글에 추가 (상태 먼저 업데이트)
+        const currentComments = comments || [];
+        const updatedComments = [localComment, ...currentComments];
+        setComments(updatedComments);
+        
+        // 게시글 댓글 수 증가
+        const updatedPosts = posts.map(post => {
+          if (post.id === selectedPost.id) {
+            return { ...post, comments: (post.comments || 0) + 1 };
+          }
+          return post;
+        });
+        setPosts(updatedPosts);
+        setSelectedPost({
+          ...selectedPost,
+          comments: (selectedPost.comments || 0) + 1,
+        });
+        
+        setNewComment('');
+        setCommentImage(null);
+        
+        // AsyncStorage 저장은 백그라운드에서 처리
+        Promise.all([
+          AsyncStorage.setItem(`comments_${selectedPost.id}`, JSON.stringify(updatedComments)),
+          AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts))
+        ]).catch(err => {
+          console.log('[Community] 로컬 댓글 저장 실패:', err);
+        });
+        
+        console.log('[Community] 로컬 댓글 저장 완료:', localCommentId);
+      } catch (localSaveError: any) {
+        console.log('[Community] 로컬 댓글 저장 중 오류:', localSaveError);
+      }
     }
+  };
+
+  // 로컬 게시글인지 확인하는 헬퍼 함수
+  const isLocalPost = (postId: string): boolean => {
+    return String(postId).startsWith('local-');
+  };
+
+  // 로컬 댓글인지 확인하는 헬퍼 함수
+  const isLocalComment = (commentId: string): boolean => {
+    return String(commentId).startsWith('local-comment-');
   };
 
   const handleDeletePost = async (postId: string) => {
@@ -821,22 +1031,58 @@ export function Community() {
           text: '삭제',
           style: 'destructive',
           onPress: async () => {
-    try {
-      await deletePost(Number(postId));
-      const updatedPosts = posts.filter(p => p.id !== postId);
-      setPosts(updatedPosts);
-      await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-      
-      if (selectedPost && selectedPost.id === postId) {
-        setShowPostDetailModal(false);
-        setSelectedPost(null);
-      }
-      
-      console.log('[Community] 게시글 삭제 완료');
-    } catch (error: any) {
-      console.log('[Community] 게시글 삭제 실패:', error.message || '게시글 삭제에 실패했습니다.');
-      Alert.alert('알림', error.message || '게시글 삭제에 실패했습니다.');
-    }
+            // 로컬 게시글인지 확인
+            if (isLocalPost(postId)) {
+              // 로컬 게시글은 로컬에서만 삭제
+              try {
+                const updatedPosts = posts.filter(p => p.id !== postId);
+                setPosts(updatedPosts);
+                
+                // 내 게시글 ID 목록에서 제거
+                const updatedMyPostIds = new Set(myPostIds);
+                updatedMyPostIds.delete(postId);
+                setMyPostIds(updatedMyPostIds);
+                
+                if (selectedPost && selectedPost.id === postId) {
+                  setShowPostDetailModal(false);
+                  setSelectedPost(null);
+                }
+                
+                // AsyncStorage 저장은 백그라운드에서 처리
+                Promise.all([
+                  AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts)),
+                  AsyncStorage.setItem(`myPosts_${userId}`, JSON.stringify(Array.from(updatedMyPostIds)))
+                ]).catch(err => {
+                  console.log('[Community] 로컬 게시글 삭제 저장 실패:', err);
+                });
+                
+                console.log('[Community] 로컬 게시글 삭제 완료:', postId);
+              } catch (error: any) {
+                console.log('[Community] 로컬 게시글 삭제 실패:', error);
+              }
+            } else {
+              // 서버 게시글은 서버에 삭제 요청
+              try {
+                await deletePost(Number(postId));
+                const updatedPosts = posts.filter(p => p.id !== postId);
+                setPosts(updatedPosts);
+                
+                if (selectedPost && selectedPost.id === postId) {
+                  setShowPostDetailModal(false);
+                  setSelectedPost(null);
+                }
+                
+                // AsyncStorage 저장은 백그라운드에서 처리
+                AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts)).catch(err => {
+                  console.log('[Community] 게시글 삭제 저장 실패:', err);
+                });
+                
+                console.log('[Community] 게시글 삭제 완료');
+              } catch (error: any) {
+                console.log('[Community] 게시글 삭제 실패:', error.message || '게시글 삭제에 실패했습니다.');
+                Alert.alert('알림', error.message || '게시글 삭제에 실패했습니다.');
+              }
+            }
           },
         },
       ]
@@ -849,6 +1095,56 @@ export function Community() {
       return;
     }
 
+    // 로컬 게시글인지 확인
+    if (isLocalPost(editingPost.id)) {
+      // 로컬 게시글은 로컬에서만 수정
+      try {
+        // 이미지 URL 처리
+        const imageUrls = editPostImages.map(img => img.uri);
+        
+        const updatedPosts = posts.map(post => {
+          if (post.id === editingPost.id) {
+            return {
+              ...post,
+              title: editPostData.title.trim(),
+              content: editPostData.content.trim(),
+              imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+              thumbnail: imageUrls.length > 0 ? imageUrls[0] : null,
+            };
+          }
+          return post;
+        });
+        
+        setPosts(updatedPosts);
+        
+        if (selectedPost && selectedPost.id === editingPost.id) {
+          setSelectedPost({
+            ...selectedPost,
+            title: editPostData.title.trim(),
+            content: editPostData.content.trim(),
+            imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+            thumbnail: imageUrls.length > 0 ? imageUrls[0] : null,
+          });
+        }
+        
+        setShowEditPostModal(false);
+        setEditingPost(null);
+        setEditPostData({ title: '', content: '' });
+        setEditPostImages([]);
+        
+        // AsyncStorage 저장은 백그라운드에서 처리
+        AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts)).catch(err => {
+          console.log('[Community] 로컬 게시글 수정 저장 실패:', err);
+        });
+        
+        console.log('[Community] 로컬 게시글 수정 완료:', editingPost.id);
+      } catch (error: any) {
+        console.log('[Community] 로컬 게시글 수정 실패:', error);
+      }
+      return;
+    }
+
+    // 서버 게시글은 서버에 수정 요청
     try {
       // 기존 게시글의 postKind를 category에서 가져오기
       // category: '운동' -> postKind: 'EXERCISE'
@@ -904,7 +1200,6 @@ export function Community() {
         return post;
       });
       setPosts(updatedPosts);
-      await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
       
       if (selectedPost && selectedPost.id === editingPost.id) {
         setSelectedPost({
@@ -918,52 +1213,22 @@ export function Community() {
       setEditingPost(null);
       setEditPostData({ title: '', content: '' });
       setEditPostImages([]);
+      
+      // AsyncStorage 저장은 백그라운드에서 처리
+      AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts)).catch(err => {
+        console.log('[Community] 게시글 수정 저장 실패:', err);
+      });
+      
       console.log('[Community] 게시글 수정 완료');
       
-      // 게시글 목록 새로고침
-      await refreshPosts();
+      // 게시글 목록 새로고침은 백그라운드에서
+      refreshPosts().catch(() => {});
     } catch (error: any) {
       console.log('[Community] 게시글 수정 실패:', error.message || '게시글 수정에 실패했습니다.');
       Alert.alert('알림', error.message || '게시글 수정에 실패했습니다.');
     }
   };
 
-  const handleDeleteComment = async (commentId: string, postId: string) => {
-    Alert.alert(
-      '댓글 삭제',
-      '정말 삭제하시겠습니까?',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteComment({
-                commentId: Number(commentId),
-                postId: Number(postId),
-              });
-
-              await loadComments(postId);
-              
-              const updatedPosts = posts.map(post => {
-                if (post.id === postId) {
-                  return { ...post, comments: Math.max((post.comments || 0) - 1, 0) };
-                }
-                return post;
-              });
-              setPosts(updatedPosts);
-              await AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts));
-            } catch (error: any) {
-              const errorMsg = error?.message || '댓글 삭제에 실패했습니다.';
-              console.log('[Community] 댓글 삭제 실패:', errorMsg);
-              Alert.alert('알림', errorMsg);
-            }
-          },
-        },
-      ]
-    );
-  };
 
   const handleLike = async (postId: string) => {
     // 현재 게시글의 좋아요 상태 확인
@@ -1003,25 +1268,122 @@ export function Community() {
     }
   };
 
+  // 투표 기능 (중복 투표 방지)
   const handleVote = async (entryId: string) => {
-    const updated = competitionEntries.map(entry => {
-      if (entry.id === entryId) {
-        const hasVoted = entry.votedBy.includes(userId);
-        return {
-          ...entry,
-          votes: hasVoted ? entry.votes - 1 : entry.votes + 1,
-          votedBy: hasVoted
-            ? entry.votedBy.filter(id => id !== userId)
-            : [...entry.votedBy, userId],
-        };
-      }
-      return entry;
-    });
-    setCompetitionEntries(updated);
-    await AsyncStorage.setItem('competitionEntries', JSON.stringify(updated));
+    if (!userId || userId === 'user@example.com') {
+      Alert.alert('알림', '로그인이 필요합니다.');
+      return;
+    }
+
+    try {
+      // 전체 참가자 목록 로드
+      const savedCompetition = await AsyncStorage.getItem('competitionEntries');
+      const allEntries: CompetitionEntry[] = savedCompetition ? JSON.parse(savedCompetition) : [];
+      
+      // 현재 월 필터링
+      const currentMonth = getCurrentMonth();
+      const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
+      
+      const updated = currentMonthEntries.map(entry => {
+        if (entry.id === entryId) {
+          const hasVoted = entry.votedBy.includes(userId);
+          
+          // 중복 투표 방지
+          if (!hasVoted && entry.votedBy.length > 0 && entry.votedBy.includes(userId)) {
+            return entry; // 이미 투표했으면 변경하지 않음
+          }
+          
+          return {
+            ...entry,
+            votes: hasVoted ? entry.votes - 1 : entry.votes + 1,
+            votedBy: hasVoted
+              ? entry.votedBy.filter(id => id !== userId)
+              : [...entry.votedBy, userId],
+          };
+        }
+        return entry;
+      });
+      
+      // 전체 목록 업데이트
+      const updatedAllEntries = allEntries.map(entry => {
+        if (entry.month === currentMonth) {
+          const updatedEntry = updated.find(e => e.id === entry.id);
+          return updatedEntry || entry;
+        }
+        return entry;
+      });
+      
+      // 저장
+      await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
+      setCompetitionEntries(updated);
+      
+      // 월말 우승자 선정 체크 (매월 마지막 날 자정에 자동 실행)
+      await checkAndSelectWinner(currentMonth, updatedAllEntries);
+    } catch (error) {
+      console.error('[Competition] 투표 실패:', error);
+      Alert.alert('오류', '투표 처리 중 오류가 발생했습니다.');
+    }
   };
 
-  const canParticipate = (category: 'classic' | 'physique') => {
+  // 월말 우승자 선정 로직
+  const checkAndSelectWinner = async (month: string, allEntries: CompetitionEntry[]) => {
+    try {
+      const now = new Date();
+      const [year, monthNum] = month.split('-').map(Number);
+      const lastDay = new Date(year, monthNum, 0).getDate();
+      const isLastDay = now.getDate() === lastDay;
+      
+      // 매월 마지막 날이거나 그 이후인 경우 우승자 선정
+      if (isLastDay || now.getDate() > lastDay) {
+        // 각 종목별로 우승자 선정
+        const classicEntries = allEntries
+          .filter(e => e.month === month && e.category === 'classic')
+          .sort((a, b) => b.votes - a.votes);
+        const physiqueEntries = allEntries
+          .filter(e => e.month === month && e.category === 'physique')
+          .sort((a, b) => b.votes - a.votes);
+        
+        // 우승자 업데이트
+        if (classicEntries.length > 0) {
+          const classicWinner = { ...classicEntries[0], isWinner: true };
+          const updatedAllEntries = allEntries.map(entry => 
+            entry.id === classicWinner.id ? classicWinner : entry
+          );
+          await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
+        }
+        
+        if (physiqueEntries.length > 0) {
+          const physiqueWinner = { ...physiqueEntries[0], isWinner: true };
+          const updatedAllEntries = allEntries.map(entry => 
+            entry.id === physiqueWinner.id ? physiqueWinner : entry
+          );
+          await AsyncStorage.setItem('competitionEntries', JSON.stringify(updatedAllEntries));
+        }
+        
+        // 대회 정보 업데이트
+        const savedCompetitionInfo = await AsyncStorage.getItem('competitionInfo');
+        if (savedCompetitionInfo) {
+          const info: CompetitionInfo = JSON.parse(savedCompetitionInfo);
+          if (info.currentMonth === month) {
+            // 현재 선택된 종목의 우승자 표시
+            const winner = competitionCategory === 'classic' 
+              ? classicEntries[0] 
+              : physiqueEntries[0];
+            if (winner) {
+              info.winner = winner;
+              await AsyncStorage.setItem('competitionInfo', JSON.stringify(info));
+              setCompetitionInfo(info);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Competition] 우승자 선정 실패:', error);
+    }
+  };
+
+  // 키에 따른 제한 제중 계산 및 체급 정보 반환
+  const getWeightClass = (category: 'classic' | 'physique') => {
     const weightClasses = {
       classic: [
         { name: '165cm 이하', heightMin: 0, heightMax: 165, weightLimit: 70 },
@@ -1042,11 +1404,27 @@ export function Community() {
     const classes = weightClasses[category];
     const userHeight = currentUser.height ?? 0;
     const userWeight = currentUser.weight ?? 0;
-    return classes.some(c =>
+    
+    const matchedClass = classes.find(c =>
       userHeight >= c.heightMin &&
-      userHeight <= c.heightMax &&
-      userWeight <= c.weightLimit
+      userHeight <= c.heightMax
     );
+
+    if (!matchedClass) {
+      return null;
+    }
+
+    return {
+      ...matchedClass,
+      canParticipate: userWeight <= matchedClass.weightLimit,
+      userWeight,
+      userHeight,
+    };
+  };
+
+  const canParticipate = (category: 'classic' | 'physique') => {
+    const weightClass = getWeightClass(category);
+    return weightClass?.canParticipate ?? false;
   };
 
   const pickCompetitionImage = async () => {
@@ -1063,7 +1441,7 @@ export function Community() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaType.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: false,
       quality: 1,
     });
@@ -1273,16 +1651,35 @@ export function Community() {
         }
       });
 
+      // 기존 로컬 게시글 가져오기 (local- 접두사가 있는 게시글)
+      const savedPosts = await AsyncStorage.getItem('communityPosts');
+      const localPosts: Post[] = [];
+      if (savedPosts) {
+        try {
+          const parsed: any[] = JSON.parse(savedPosts);
+          const filtered = parsed
+            .filter((item: any) => String(item?.id || '').startsWith('local-'))
+            .map(item => normalizePost(item));
+          localPosts.push(...filtered);
+        } catch (e) {
+          console.log('[refreshPosts] 로컬 게시글 파싱 실패:', e);
+        }
+      }
+
       if (allPosts.length > 0) {
         const enrichedPosts = await enrichPostsWithDetails(allPosts);
-        setPosts(enrichedPosts);
-        await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
+        // 서버 게시글과 로컬 게시글 병합
+        const mergedPosts = [...enrichedPosts, ...localPosts];
+        setPosts(mergedPosts);
+        await AsyncStorage.setItem('communityPosts', JSON.stringify(mergedPosts));
       } else {
-        // API에서 게시글이 없으면 로컬 캐시 사용
-        const savedPosts = await AsyncStorage.getItem('communityPosts');
+        // API에서 게시글이 없으면 로컬 캐시 사용 (로컬 게시글 포함)
         if (savedPosts) {
           const parsed: any[] = JSON.parse(savedPosts);
           setPosts(parsed.map(item => normalizePost(item)));
+        } else if (localPosts.length > 0) {
+          setPosts(localPosts);
+          await AsyncStorage.setItem('communityPosts', JSON.stringify(localPosts));
         }
       }
 
@@ -1298,6 +1695,7 @@ export function Community() {
         const savedPosts = await AsyncStorage.getItem('communityPosts');
         if (savedPosts) {
           const parsed: any[] = JSON.parse(savedPosts);
+          // 로컬 게시글(local- 접두사)은 항상 유지
           setPosts(parsed.map(item => normalizePost(item)));
         }
         const savedCompetition = await AsyncStorage.getItem('competitionEntries');
@@ -1581,7 +1979,10 @@ export function Community() {
         >
           <Card style={styles.competitionCard}>
             <View style={styles.competitionHeader}>
-              <Text style={styles.cardTitle}>🏆 피지크 대회</Text>
+              <View style={styles.cardTitleContainer}>
+                <Icon name="award" size={20} color="#6366f1" style={{ marginRight: 6 }} />
+                <Text style={styles.cardTitle}>피지크 대회</Text>
+              </View>
               <Button
                 title="참가 신청"
                 onPress={() => setShowCompetitionModal(true)}
@@ -1590,6 +1991,31 @@ export function Community() {
             <Text style={styles.competitionDesc}>
               사진을 업로드하고 투표를 받아보세요!
             </Text>
+            
+            {/* 이달의 우승자 표시 - 현재 선택된 종목 기준 */}
+            {(() => {
+              const currentMonth = getCurrentMonth();
+              const winner = competitionEntries
+                .filter(e => e.category === competitionCategory && e.isWinner && e.month === currentMonth)
+                .sort((a, b) => b.votes - a.votes)[0];
+              
+              if (winner) {
+                return (
+                  <View style={styles.winnerCard}>
+                    <View style={styles.winnerTitleContainer}>
+                      <Icon name="award" size={18} color="#f59e0b" style={{ marginRight: 6 }} />
+                      <Text style={styles.winnerTitle}>이달의 우승자</Text>
+                    </View>
+                    <Text style={styles.winnerName}>{winner.userName}</Text>
+                    <Text style={styles.winnerDetails}>
+                      {winner.category === 'classic' ? '클래식 피지크' : '피지크'} · {winner.weightClass}
+                    </Text>
+                    <Text style={styles.winnerVotes}>총 {winner.votes}표</Text>
+                  </View>
+                );
+              }
+              return null;
+            })()}
 
             {/* Competition Categories */}
             <View style={styles.competitionTabs}>
@@ -1625,6 +2051,13 @@ export function Community() {
                   피지크
                 </Text>
               </TouchableOpacity>
+            </View>
+            
+            {/* 종목 선택 시 개요 설명 */}
+            <View style={styles.competitionDescriptionContainer}>
+              <Text style={styles.competitionDescriptionText}>
+                {COMPETITION_CATEGORY_DESCRIPTIONS[competitionCategory]}
+              </Text>
             </View>
 
             {/* Entries */}
@@ -1940,124 +2373,78 @@ export function Community() {
                     });
                     console.log('[CREATE_POST] payload 전체:', JSON.stringify(payload));
                     
-                    // 파일이 있을 때만 2단계로 처리 (백엔드 문제 우회)
-                    if (uploadFiles.length > 0) {
-                      // 1단계: 파일 없이 게시글 먼저 생성
-                      await createPost(payload, undefined);
-                      console.log('[CREATE_POST] 게시글 생성 성공 (파일 제외)');
+                    // 파일이 있든 없든 한 번에 처리
+                    await createPost(payload, uploadFiles.length > 0 ? uploadFiles : undefined);
+                    console.log('[CREATE_POST] 게시글 작성 성공');
+                    
+                    // 게시글 목록 새로고침
+                    await refreshPosts();
+                    
+                    // 성공 시 모달 닫기 및 폼 초기화
+                    closeWriteModal();
+                    setNewPost({ title: '', content: '', category: '운동' });
+                    setPostImages([]);
+                    Alert.alert('완료', '게시글이 작성되었습니다.');
+                  } catch (error: any) {
+                    const errorMessage = error?.message || '서버에 게시글을 저장하지 못했습니다.';
+                    // 서버 에러는 로컬 저장으로 대체되므로 에러 로그 최소화
+                    console.log('[CREATE_POST] 서버 저장 실패, 로컬에 저장합니다');
+                    
+                    // 서버 저장 실패 시 로컬에 저장
+                    try {
+                      const localPostId = `local-${Date.now()}`;
+                      const now = new Date().toISOString();
+                      const authorName = currentUser?.nickname || currentUser?.name || '익명';
+                      const authorProfileImage = currentUser?.profileImage || currentUser?.profileImageUrl || null;
                       
-                      // 2단계: DB 반영 시간 확보를 위한 짧은 지연
-                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      // 이미지 URL 처리
+                      const imageUrls = postImages.map(img => img.uri);
                       
-                      // 3단계: 해당 postKind의 게시글만 직접 조회해서 최신 게시글 찾기
-                      const { getPosts } = await import('../../api/posts');
-                      let latestPost: any = null;
+                      const localPost: Post = {
+                        id: localPostId,
+                        author: authorName,
+                        authorId: String(userId),
+                        authorProfileImage: authorProfileImage,
+                        category: newPost.category,
+                        title: payload.title,
+                        content: payload.content,
+                        likes: 0,
+                        likedBy: [],
+                        comments: 0,
+                        createdAt: now,
+                        time: formatPostDate(now),
+                        displayDate: formatAbsoluteDate(now),
+                        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+                        thumbnail: imageUrls.length > 0 ? imageUrls[0] : null,
+                      };
                       
-                      try {
-                        const kindPosts = await getPosts(payload.postKind);
-                        
-                        // 조회한 게시글을 normalizePost로 변환
-                        const categoryMap: Record<PostKind, string> = {
-                          'EXERCISE': '운동',
-                          'FOOD': '음식',
-                          'DIET': '식단',
-                          'COMPETITION': '대회',
-                        };
-                        const normalizedPosts = kindPosts.map((post: any) =>
-                          normalizePost(post, categoryMap[payload.postKind])
-                        );
-                        
-                        // 최신 게시글 중에서 방금 생성한 게시글 찾기 (제목, 내용, 작성자로 매칭)
-                        latestPost = normalizedPosts.find(p => 
-                          p.title === payload.title.trim() &&
-                          p.content === payload.content.trim() &&
-                          p.authorId === userId
-                        );
-                      } catch (error) {
-                        console.log('[CREATE_POST] 게시글 목록 조회 실패:', error);
-                      }
+                      // 게시글 목록에 추가 (상태 먼저 업데이트)
+                      const updatedPosts = [localPost, ...posts];
+                      setPosts(updatedPosts);
                       
-                      if (latestPost && latestPost.id) {
-                        // 4단계: updatePost로 파일 추가
-                        await updatePost({
-                          id: Number(latestPost.id),
-                          title: payload.title.trim(),
-                          content: payload.content.trim(),
-                          postKind: payload.postKind,
-                        }, uploadFiles);
-                        console.log('[CREATE_POST] 파일 추가 완료');
-                        
-                        // 파일 추가 후 전체 목록 새로고침
-                        await refreshPosts();
-                        
-                        // 성공 시 모달 닫기 및 폼 초기화
-                        closeWriteModal();
-                        setNewPost({ title: '', content: '', category: '운동' });
-                        setPostImages([]);
-                        Alert.alert('완료', '게시글이 작성되었습니다.');
-                      } else {
-                        console.warn('[CREATE_POST] 최신 게시글을 찾을 수 없어 파일 추가 실패', {
-                          searchedTitle: payload.title.trim(),
-                          searchedContent: payload.content.trim(),
-                        });
-                        Alert.alert('알림', '게시글은 생성되었지만 파일 추가에 실패했습니다. 게시글 수정 기능으로 파일을 추가해주세요.');
-                        // 게시글 목록 새로고침
-                        await refreshPosts();
-                        
-                        // 게시글은 생성되었으므로 모달 닫기
-                        closeWriteModal();
-                        setNewPost({ title: '', content: '', category: '운동' });
-                        setPostImages([]);
-                      }
-                    } else {
-                      // 파일이 없으면 그냥 생성
-                      await createPost(payload, undefined);
-                      console.log('[CREATE_POST] 게시글 작성 성공');
-                      
-                      // 게시글 목록 새로고침
-                      await refreshPosts();
+                      // 내 게시글 ID 목록에 추가
+                      const updatedMyPostIds = new Set(myPostIds);
+                      updatedMyPostIds.add(localPostId);
+                      setMyPostIds(updatedMyPostIds);
                       
                       // 성공 시 모달 닫기 및 폼 초기화
                       closeWriteModal();
                       setNewPost({ title: '', content: '', category: '운동' });
                       setPostImages([]);
-                      Alert.alert('완료', '게시글이 작성되었습니다.');
+                      
+                      // AsyncStorage 저장은 백그라운드에서 처리 (await 제거)
+                      Promise.all([
+                        AsyncStorage.setItem('communityPosts', JSON.stringify(updatedPosts)),
+                        AsyncStorage.setItem(`myPosts_${userId}`, JSON.stringify(Array.from(updatedMyPostIds)))
+                      ]).catch(err => {
+                        console.log('[CREATE_POST] 로컬 저장 실패:', err);
+                      });
+                      
+                      console.log('[CREATE_POST] 로컬 게시글 저장 완료:', localPostId);
+                    } catch (localSaveError: any) {
+                      console.log('[CREATE_POST] 로컬 저장 중 오류:', localSaveError);
+                      // 로컬 저장도 실패하면 조용히 실패 (에러 메시지 표시 안 함)
                     }
-                  } catch (error: any) {
-                    const errorMessage = error?.message || '서버에 게시글을 저장하지 못했습니다.';
-                    console.log('[CREATE_POST_ERROR]', error);
-                    console.log('[CREATE_POST_ERROR_DETAIL]', error?.response?.status, error?.response?.data, error?.response?.config?.headers);
-                    console.log('[CREATE_POST] 에러 전체:', JSON.stringify(error, null, 2));
-                    console.log('[CREATE_POST] 게시글 작성 실패:', errorMessage);
-                    
-                    // 에러 타입에 따른 메시지 개선
-                    let userMessage = errorMessage;
-                    if (errorMessage.includes('500') || errorMessage.includes('Internal Server Error')) {
-                      userMessage = '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n\n문제가 계속되면 관리자에게 문의해주세요.';
-                    } else if (errorMessage.includes('400') || errorMessage.includes('Bad Request')) {
-                      userMessage = '입력한 내용을 확인해주세요.\n\n' + errorMessage;
-                    } else if (errorMessage.includes('네트워크') || errorMessage.includes('Network')) {
-                      userMessage = '네트워크 연결을 확인해주세요.';
-                    } else if (errorMessage.includes('WebView')) {
-                      userMessage = 'WebView가 필요합니다. 로그인 후 다시 시도해주세요.';
-                    }
-                    
-                    // 사용자에게 에러 메시지 표시 (모달은 닫지 않음 - 사용자가 수정할 수 있도록)
-                    Alert.alert(
-                      '게시글 작성 실패',
-                      userMessage,
-                      [{ 
-                        text: '확인', 
-                        style: 'default',
-                        onPress: () => {
-                          // 모달은 닫지 않고 사용자가 수정할 수 있도록 유지
-                        }
-                      }]
-                    );
-                    
-                    // 서버 저장 실패 시 로컬 fallback 제거 (500 에러 등 서버 오류는 저장하지 않음)
-                    // 게시글은 서버에 저장된 경우에만 표시
-                    // 모달은 닫지 않음 - 사용자가 내용을 수정하고 다시 시도할 수 있도록
                   }
                 }}
               />
@@ -2221,21 +2608,15 @@ export function Community() {
                               <Text style={styles.commentAuthor}>{comment.author}</Text>
                               <Text style={styles.commentTime}>{comment.time}</Text>
                             </View>
-                            {(comment.authorId === userId || String(comment.authorId) === String(userId)) && (
-                              <TouchableOpacity
-                                onPress={() => handleDeleteComment(comment.id, selectedPost.id)}
-                                style={styles.commentDeleteButton}
-                              >
-                                <Text style={styles.commentDeleteButtonText}>삭제</Text>
-                              </TouchableOpacity>
-                            )}
                           </View>
                           <Text style={styles.commentContent}>{comment.content}</Text>
                           {comment.imageUrl ? (
                             <TouchableOpacity
                               onPress={() => {
-                                setSelectedImageUrl(comment.imageUrl);
-                                setShowImageModal(true);
+                                if (comment.imageUrl) {
+                                  setSelectedImageUrl(comment.imageUrl);
+                                  setShowImageModal(true);
+                                }
                               }}
                               activeOpacity={0.9}
                               style={styles.commentImageWrapper}
@@ -2324,16 +2705,6 @@ export function Community() {
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>대회 참가 신청</Text>
 
-              <Text style={styles.modalLabel}>나의 정보</Text>
-              <View style={styles.userInfo}>
-                <Text>키: {currentUser.height ?? 0}cm</Text>
-                <Text>몸무게: {currentUser.weight ?? 0}kg</Text>
-                {canParticipate('classic') ? (
-                  <Text style={styles.eligibleText}>✅ 출전 가능</Text>
-                ) : (
-                  <Text style={styles.ineligibleText}>❌ 체급 조건 불만족</Text>
-                )}
-              </View>
 
               <Text style={styles.modalLabel}>사진 업로드 (최소 3장 필수)</Text>
               <View style={styles.imageGrid}>
@@ -2364,22 +2735,85 @@ export function Community() {
                   onPress={() => {
                     setShowCompetitionModal(false);
                     setCompetitionImages([]);
+                    setSelectedCompetitionCategory('classic');
                   }}
                 />
                 <Button
                   title="제출"
-                  onPress={() => {
+                  onPress={async () => {
+                    // 사진 인증: 최소 3장 필수
                     if (competitionImages.length < 3) {
                       Alert.alert('알림', '사진을 최소 3장 업로드해주세요.');
                       return;
                     }
-                    if (!canParticipate('classic')) {
-                      Alert.alert('체급 조건을 만족하지 않습니다');
+                    
+                    // 키에 따른 제한 제중 확인
+                    if (!canParticipate(selectedCompetitionCategory)) {
+                      const weightClass = getWeightClass(selectedCompetitionCategory);
+                      Alert.alert(
+                        '체급 조건 불만족',
+                        `선택한 종목의 체급 조건을 만족하지 않습니다.\n\n체급: ${weightClass?.name}\n제한 무게: ${weightClass?.weightLimit}kg 이하\n현재 무게: ${weightClass?.userWeight}kg`
+                      );
                       return;
                     }
-                    Alert.alert('참가 신청이 완료되었습니다!');
-                    setShowCompetitionModal(false);
-                    setCompetitionImages([]);
+                    
+                    // 월별 대회 중복 참가 확인
+                    const currentMonth = getCurrentMonth();
+                    const alreadyParticipated = competitionEntries.some(
+                      entry => entry.userId === userId && entry.month === currentMonth && entry.category === selectedCompetitionCategory
+                    );
+                    
+                    if (alreadyParticipated) {
+                      Alert.alert('알림', '이미 이번 달 대회에 참가하셨습니다.');
+                      return;
+                    }
+                    
+                    // 체급 정보 가져오기
+                    const weightClass = getWeightClass(selectedCompetitionCategory);
+                    if (!weightClass) {
+                      Alert.alert('오류', '체급 정보를 가져올 수 없습니다.');
+                      return;
+                    }
+                    
+                    // 새로운 참가자 추가
+                    const newEntry: CompetitionEntry = {
+                      id: `entry_${Date.now()}_${userId}`,
+                      userId: userId,
+                      userName: currentUser.nickname || currentUser.name || '사용자',
+                      userHeight: currentUser.height ?? 0,
+                      userWeight: currentUser.weight ?? 0,
+                      category: selectedCompetitionCategory,
+                      weightClass: weightClass.name,
+                      images: competitionImages,
+                      votes: 0,
+                      votedBy: [],
+                      submittedAt: new Date().toISOString(),
+                      verified: true, // 사진 인증 완료
+                      month: currentMonth,
+                      isWinner: false,
+                    };
+                    
+                    // 기존 모든 참가자 로드
+                    try {
+                      const savedCompetition = await AsyncStorage.getItem('competitionEntries');
+                      const allEntries: CompetitionEntry[] = savedCompetition ? JSON.parse(savedCompetition) : [];
+                      
+                      // 새 참가자 추가
+                      allEntries.push(newEntry);
+                      await AsyncStorage.setItem('competitionEntries', JSON.stringify(allEntries));
+                      
+                      // 현재 월의 참가자만 필터링하여 상태 업데이트
+                      const currentMonthEntries = allEntries.filter(entry => entry.month === currentMonth);
+                      setCompetitionEntries(currentMonthEntries);
+                      
+                      Alert.alert('완료', '대회 참가 신청이 완료되었습니다!');
+                      setShowCompetitionModal(false);
+                      setCompetitionImages([]);
+                      setSelectedCompetitionCategory('classic');
+                    } catch (error) {
+                      console.error('[Competition] 참가 신청 실패:', error);
+                      Alert.alert('오류', '참가 신청 처리 중 오류가 발생했습니다.');
+                    }
                   }}
                 />
               </View>
@@ -2565,40 +2999,45 @@ export function Community() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#f1f5f9',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    paddingTop: 50,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    paddingTop: 60,
     backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    marginBottom: 4,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 36,
+    fontWeight: '900',
     color: '#0f172a',
-    letterSpacing: -0.5,
+    letterSpacing: -1,
   },
   writeButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#6366f1',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#6366f1',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
+    borderWidth: 2,
+    borderColor: '#4f46e5',
   },
   writeButtonText: {
     fontSize: 22,
@@ -2613,19 +3052,19 @@ const styles = StyleSheet.create({
   },
   tab: {
     flex: 1,
-    paddingVertical: 14,
+    paddingVertical: 16,
     alignItems: 'center',
     borderBottomWidth: 3,
     borderBottomColor: 'transparent',
-    marginHorizontal: 4,
+    marginHorizontal: 6,
   },
   tabActive: {
     borderBottomColor: '#6366f1',
   },
   tabText: {
-    fontSize: 15,
+    fontSize: 16,
     color: '#64748b',
-    fontWeight: '500',
+    fontWeight: '600',
   },
   tabTextActive: {
     color: '#6366f1',
@@ -2835,7 +3274,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
-    backdropFilter: 'blur(10px)',
   },
   postImageBadgeText: {
     color: '#fff',
@@ -2890,6 +3328,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  cardTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   cardTitle: {
     fontSize: 18,
     fontWeight: 'bold',
@@ -2930,6 +3372,103 @@ const styles = StyleSheet.create({
   competitionTabTextActive: {
     color: '#ffffff',
     fontWeight: '700',
+  },
+  competitionDescriptionContainer: {
+    backgroundColor: '#f8fafc',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#6366f1',
+  },
+  competitionDescriptionText: {
+    fontSize: 13,
+    color: '#475569',
+    lineHeight: 18,
+  },
+  winnerCard: {
+    backgroundColor: '#fff7ed',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#fb923c',
+  },
+  winnerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  winnerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ea580c',
+  },
+  winnerName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  winnerDetails: {
+    fontSize: 13,
+    color: '#64748b',
+    marginBottom: 4,
+  },
+  winnerVotes: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ea580c',
+  },
+  categorySelectButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    marginHorizontal: 4,
+  },
+  categorySelectButtonActive: {
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+  },
+  categorySelectButtonText: {
+    fontSize: 14,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  categorySelectButtonTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  competitionCategorySelector: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  userInfo: {
+    backgroundColor: '#f8fafc',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  userInfoText: {
+    fontSize: 14,
+    color: '#475569',
+    marginBottom: 4,
+  },
+  eligibleText: {
+    fontSize: 14,
+    color: '#16a34a',
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  ineligibleText: {
+    fontSize: 14,
+    color: '#dc2626',
+    fontWeight: '600',
+    marginTop: 8,
   },
   entryCard: {
     marginBottom: 16,
@@ -3027,20 +3566,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
-  },
-  userInfo: {
-    padding: 12,
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  eligibleText: {
-    color: '#34C759',
-    marginTop: 4,
-  },
-  ineligibleText: {
-    color: '#FF3B30',
-    marginTop: 4,
   },
   modalButtons: {
     flexDirection: 'row',
@@ -3410,17 +3935,6 @@ const styles = StyleSheet.create({
   },
   commentHeaderLeft: {
     flex: 1,
-  },
-  commentDeleteButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: '#ef4444',
-  },
-  commentDeleteButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '700',
   },
   commentImageWrapper: {
     width: '100%',

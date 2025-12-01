@@ -50,6 +50,9 @@ export interface VerifyCodeRequest {
 
 /**
  * Food Response
+ * 백엔드: FoodResponse (BigDecimal, Long 타입)
+ * - calory, carbohydrate, protein, fat: BigDecimal -> number
+ * - weight: Long -> number (그램 수)
  */
 export interface FoodResponse {
   id: number;
@@ -60,6 +63,7 @@ export interface FoodResponse {
   fat?: number;
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number; // Long -> number (그램 수)
 }
 
 /**
@@ -317,6 +321,8 @@ export interface ExerciseInfoDto {
  * Exercise Recommendation Item
  * 백엔드: ExerciseRecommendation (단일 항목)
  * 응답: Api<List<ExerciseRecommendation>>
+ * 
+ * 업데이트: sets, reps, weight 필드 추가
  */
 export interface ExerciseRecommendationItem {
   name: string;
@@ -324,6 +330,9 @@ export interface ExerciseRecommendationItem {
   youtubeLink: string; // 백엔드: youtubeLink (단수)
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
   part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';
+  sets?: number; // 세트 수 (Integer)
+  reps?: number; // 횟수 (Integer)
+  weight?: number; // 무게 (Double)
 }
 
 /**
@@ -334,9 +343,21 @@ export type ExerciseRecommendation = ExerciseRecommendationItem[];
 
 /**
  * Exercise Request
- * 백엔드: ExerciseRequest { userInput, level, part }
+ * 백엔드: ExerciseRequest { exerciseTime: int, condition: ConditionStatus }
+ * - exerciseTime: 운동 시간 (분 단위)
+ * - condition: 컨디션 상태 (TIRED, NORMAL, BEST)
  */
 export interface ExerciseRequest {
+  exerciseTime: number; // int
+  condition: 'TIRED' | 'NORMAL' | 'BEST'; // ConditionStatus enum
+}
+
+/**
+ * Part Exercise Request
+ * 백엔드: PartExerciseRequest { userInput: String, level: Level, part: ExercisePart }
+ * - /api/exercise/part/recommend 엔드포인트용
+ */
+export interface PartExerciseRequest {
   userInput: string;
   level: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
   part: 'CHEST' | 'BACK' | 'SHOULDER' | 'LOWER_BODY' | 'BICEPS' | 'TRICEPS' | 'CARDIO' | 'HOME_TRAINING';

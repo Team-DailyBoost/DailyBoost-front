@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Linking,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Feather as Icon } from '@expo/vector-icons';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -19,6 +20,7 @@ import { WorkoutService } from '../../services/workoutService';
 
 interface Exercise {
   id: string;
+  exerciseId?: number; // 백엔드에서 받은 운동 ID (register API 호출 시 사용)
   name: string;
   bodyPart: string;
   isCardio: boolean;
@@ -43,6 +45,35 @@ interface WorkoutEntry {
   duration?: number;
   memo: string;
   time: string;
+  date?: string; // 운동 기록 날짜 (YYYY-MM-DD 형식)
+  source?: 'backend' | 'local';
+}
+
+const LOCAL_WORKOUT_ENTRIES_KEY = '@workoutLogger:localEntries';
+
+async function readLocalWorkoutEntries(): Promise<WorkoutEntry[]> {
+  try {
+    const stored = await AsyncStorage.getItem(LOCAL_WORKOUT_ENTRIES_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((item) => ({
+      ...item,
+      source: 'local' as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function persistLocalWorkoutEntries(entries: WorkoutEntry[]) {
+  try {
+    await AsyncStorage.setItem(LOCAL_WORKOUT_ENTRIES_KEY, JSON.stringify(entries));
+  } catch (error) {
+    console.error('[WorkoutLogger] 운동 기록 저장 실패:', error);
+  }
 }
 
 export function WorkoutLogger() {
@@ -54,6 +85,8 @@ export function WorkoutLogger() {
   // 중복 호출 방지 플래그
   const requestingRecommendationsRef = useRef(false);
   const requestingBodyPartRef = useRef(false);
+  // 사용된 운동 ID 추적 (중복 방지)
+  const usedExerciseIdsRef = useRef<Set<number>>(new Set());
   const [condition, setCondition] = useState<'good' | 'normal' | 'tired'>('normal');
   const [activeTab, setActiveTab] = useState<'recommendations' | 'logger'>('recommendations');
   const [timerRunning, setTimerRunning] = useState(false);
@@ -63,6 +96,233 @@ export function WorkoutLogger() {
   const [bodyPartRecommendations, setBodyPartRecommendations] = useState<Exercise[]>([]); // 부위별 운동 추천
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [loadingBodyPartRecommendations, setLoadingBodyPartRecommendations] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [userId, setUserId] = useState<string>('');
+
+  // 사용자 정보 로드
+  useEffect(() => {
+    loadUserInfo();
+    loadTodaysWorkouts();
+  }, []);
+
+  // 오늘의 운동 기록 로드 (로컬 + 백엔드)
+  const loadTodaysWorkouts = async () => {
+    try {
+      // 로컬 저장된 운동 기록 로드
+      const localEntries = await readLocalWorkoutEntries();
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      
+      // 오늘 날짜의 로컬 기록만 필터링
+      const todayLocalEntries = localEntries.filter(entry => entry.date === today);
+      
+      // 백엔드에서 오늘의 운동 목록 가져오기 시도
+      try {
+        const { getTodayExercises } = await import('../../api/exercises');
+        const backendExercises = await getTodayExercises();
+        
+        console.log('[WorkoutLogger] 백엔드 운동 목록:', backendExercises);
+        
+        // 백엔드 운동을 WorkoutEntry로 변환
+        const backendEntries: WorkoutEntry[] = backendExercises.map((ex, index) => {
+          const partKey = ex.part || 'HOME_TRAINING';
+          const meta = EXERCISE_PART_META[partKey as keyof typeof EXERCISE_PART_META] ?? DEFAULT_EXERCISE_META;
+          const difficulty = normalizeDifficulty(ex.level);
+          
+          const exercise: Exercise = decorateExercise({
+            id: `backend_${ex.id}_${index}`,
+            exerciseId: ex.id,
+            name: ex.name,
+            bodyPart: meta.bodyPart,
+            isCardio: Boolean(meta.isCardio),
+            calories: 8,
+            cautions: meta.cautions,
+            description: ex.description || '',
+            difficulty,
+            duration: undefined,
+            part: partKey,
+            youtubeLink: ex.youtubeLink,
+            source: 'AI',
+          });
+          
+          // 백엔드에서 받은 sets, reps, weight 값을 확인
+          console.log('[WorkoutLogger] 백엔드 운동 데이터:', {
+            id: ex.id,
+            name: ex.name,
+            sets: ex.sets,
+            reps: ex.reps,
+            weight: ex.weight,
+            level: ex.level,
+          });
+          
+          // 백엔드에서 받은 sets, reps, weight 값을 숫자로 변환
+          const backendSets = typeof ex.sets === 'number' ? ex.sets : (ex.sets ? Number(ex.sets) : 0);
+          const backendReps = typeof ex.reps === 'number' ? ex.reps : (ex.reps ? Number(ex.reps) : 0);
+          const backendWeight = typeof ex.weight === 'number' ? ex.weight : (ex.weight ? Number(ex.weight) : 0);
+          
+          console.log('[WorkoutLogger] 백엔드 값 변환:', {
+            원본_sets: ex.sets,
+            원본_reps: ex.reps,
+            원본_weight: ex.weight,
+            변환_sets: backendSets,
+            변환_reps: backendReps,
+            변환_weight: backendWeight,
+          });
+          
+          // 백엔드에서 받은 sets, reps, weight 값을 그대로 사용
+          // 0이거나 없으면 난이도에 따른 기본값 적용
+          const getDefaultSets = () => {
+            if (backendSets && backendSets > 0) {
+              console.log('[WorkoutLogger] 백엔드 sets 값 사용:', backendSets);
+              return backendSets;
+            }
+            // 난이도에 따른 기본값
+            const defaultSets = difficulty === 'beginner' ? 3 : difficulty === 'intermediate' ? 4 : 5;
+            console.log('[WorkoutLogger] sets 기본값 적용:', defaultSets);
+            return defaultSets;
+          };
+          
+          const getDefaultReps = () => {
+            if (backendReps && backendReps > 0) {
+              console.log('[WorkoutLogger] 백엔드 reps 값 사용:', backendReps);
+              return backendReps;
+            }
+            // 난이도에 따른 기본값
+            const defaultReps = difficulty === 'beginner' ? 12 : difficulty === 'intermediate' ? 10 : 8;
+            console.log('[WorkoutLogger] reps 기본값 적용:', defaultReps);
+            return defaultReps;
+          };
+          
+          const finalSets = getDefaultSets();
+          const finalReps = getDefaultReps();
+          const finalWeight = backendWeight;
+          
+          console.log('[WorkoutLogger] 최종 적용 값:', {
+            name: ex.name,
+            exerciseId: ex.id,
+            finalSets,
+            finalReps,
+            finalWeight,
+            backendSets_원본: ex.sets,
+            backendReps_원본: ex.reps,
+          });
+          
+          const workoutEntry: WorkoutEntry = {
+            id: `backend_${ex.id}_${Date.now()}_${index}`,
+            exercise,
+            sets: finalSets,
+            reps: finalReps,
+            weight: finalWeight, // weight는 0일 수 있으므로 그대로 사용
+            duration: undefined,
+            memo: '',
+            time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+            date: today,
+            source: 'backend',
+          };
+          
+          // 반환되는 객체의 실제 값 확인
+          console.log('[WorkoutLogger] WorkoutEntry 객체 생성:', {
+            name: workoutEntry.exercise.name,
+            sets: workoutEntry.sets,
+            reps: workoutEntry.reps,
+            weight: workoutEntry.weight,
+          });
+          
+          return workoutEntry;
+        });
+        
+        // 로컬과 백엔드 기록 병합 (백엔드 데이터가 로컬 데이터를 완전히 덮어씀)
+        const allEntries: WorkoutEntry[] = [];
+        
+        // 먼저 백엔드 항목들을 추가 (백엔드가 최신 데이터이므로 우선)
+        backendEntries.forEach(backendEntry => {
+          console.log('[WorkoutLogger] 백엔드 항목 추가:', {
+            name: backendEntry.exercise.name,
+            exerciseId: backendEntry.exercise.exerciseId,
+            sets: backendEntry.sets,
+            reps: backendEntry.reps,
+            weight: backendEntry.weight,
+            source: backendEntry.source,
+          });
+          allEntries.push(backendEntry);
+        });
+        
+        // 백엔드에 없는 로컬 항목들만 추가 (백엔드가 우선순위)
+        todayLocalEntries.forEach(localEntry => {
+          const existsInBackend = backendEntries.some(
+            entry => entry.exercise.exerciseId === localEntry.exercise.exerciseId
+          );
+          if (!existsInBackend) {
+            console.log('[WorkoutLogger] 로컬 항목 추가 (백엔드에 없음):', {
+              name: localEntry.exercise.name,
+              exerciseId: localEntry.exercise.exerciseId,
+            });
+            allEntries.push(localEntry);
+          } else {
+            console.log('[WorkoutLogger] 로컬 항목 건너뜀 (백엔드 데이터로 대체됨):', {
+              name: localEntry.exercise.name,
+              exerciseId: localEntry.exercise.exerciseId,
+            });
+          }
+        });
+        
+        // 최종 상태 업데이트 전 값 검증
+        console.log('[WorkoutLogger] 상태 업데이트 전 최종 검증:', {
+          totalCount: allEntries.length,
+          entries: allEntries.map((entry, idx) => ({
+            index: idx,
+            name: entry.exercise.name,
+            exerciseId: entry.exercise.exerciseId,
+            sets: entry.sets,
+            reps: entry.reps,
+            weight: entry.weight,
+            source: entry.source,
+            sets_type: typeof entry.sets,
+            reps_type: typeof entry.reps,
+          })),
+        });
+        
+        console.log('[WorkoutLogger] 운동 기록 로드 완료:', {
+          local: todayLocalEntries.length,
+          backend: backendEntries.length,
+          total: allEntries.length,
+        });
+        
+        setTodaysWorkouts(allEntries);
+      } catch (error: any) {
+        console.log('[WorkoutLogger] 백엔드 운동 로드 실패, 로컬만 사용:', error?.message || error);
+        // 백엔드 로드 실패 시 로컬 기록만 사용
+        setTodaysWorkouts(todayLocalEntries);
+      }
+    } catch (error) {
+      console.error('[WorkoutLogger] 운동 기록 로드 실패:', error);
+    }
+  };
+
+  const loadUserInfo = async () => {
+    try {
+      const saved = await AsyncStorage.getItem('currentUser');
+      const parsed = saved ? JSON.parse(saved) : null;
+      
+      if (parsed && Object.keys(parsed).length > 0) {
+        setCurrentUser(parsed);
+        const userIdentifier = parsed.email || parsed.id || '';
+        setUserId(String(userIdentifier));
+        console.log('[WorkoutLogger] 사용자 정보 로드:', {
+          email: parsed.email,
+          id: parsed.id,
+          userId: userIdentifier,
+        });
+      } else {
+        console.warn('[WorkoutLogger] 사용자 정보가 없습니다.');
+        setCurrentUser(null);
+        setUserId('');
+      }
+    } catch (error) {
+      console.error('[WorkoutLogger] 사용자 정보 로드 실패:', error);
+      setCurrentUser(null);
+      setUserId('');
+    }
+  };
 
   const openYoutubeLink = (url: string) => {
     if (!url) return;
@@ -93,13 +353,13 @@ export function WorkoutLogger() {
   ];
 
   const bodyParts = [
-    { id: 'chest', name: '가슴', icon: '💪' },
-    { id: 'back', name: '등', icon: '🏋️' },
-    { id: 'shoulder', name: '어깨', icon: '🤲' },
-    { id: 'legs', name: '하체', icon: '🦵' },
-    { id: 'biceps', name: '이두', icon: '💪' },
-    { id: 'triceps', name: '삼두', icon: '🔥' },
-    { id: 'cardio', name: '유산소', icon: '❤️' },
+    { id: 'chest', name: '가슴', icon: 'heart' },
+    { id: 'back', name: '등', icon: 'layers' },
+    { id: 'shoulder', name: '어깨', icon: 'target' },
+    { id: 'legs', name: '하체', icon: 'activity' },
+    { id: 'biceps', name: '이두', icon: 'zap' },
+    { id: 'triceps', name: '삼두', icon: 'flame' },
+    { id: 'cardio', name: '유산소', icon: 'wind' },
   ];
 
 const BODY_PART_LABELS: Record<string, string> = bodyParts.reduce((acc, part) => {
@@ -208,8 +468,22 @@ const convertRecommendationToExercise = (item: any, index: number): Exercise => 
   const youtubeLink =
     rawYoutubeLink && rawYoutubeLink.trim().length > 0 ? rawYoutubeLink.trim() : undefined;
 
+  // 백엔드에서 받은 운동 ID 확인 (id 필드 또는 exerciseId 필드)
+  const exerciseId = typeof item?.id === 'number' ? item.id : 
+                    typeof item?.exerciseId === 'number' ? item.exerciseId : 
+                    undefined;
+  
+  console.log('[WorkoutLogger] convertRecommendationToExercise:', {
+    itemName: item?.name,
+    itemId: item?.id,
+    itemExerciseId: item?.exerciseId,
+    extractedExerciseId: exerciseId,
+    fullItem: item,
+  });
+
   return decorateExercise({
     id: `ai_${Date.now()}_${index}`,
+    exerciseId: exerciseId, // 백엔드에서 받은 운동 ID
     name: item?.name || `추천 운동 ${index + 1}`,
     bodyPart: meta.bodyPart,
     isCardio: Boolean(meta.isCardio),
@@ -242,16 +516,20 @@ const getPartLabel = (exercise: Exercise) =>
     setLoadingRecommendations(true);
     
     try {
-      const userStr = await AsyncStorage.getItem('currentUser');
-      if (!userStr) {
-        Alert.alert('알림', '로그인이 필요합니다.');
-        return;
+      // 사용자 정보 확인 및 로드
+      if (!currentUser || !userId) {
+        const userStr = await AsyncStorage.getItem('currentUser');
+        if (!userStr) {
+          Alert.alert('알림', '로그인이 필요합니다.');
+          return;
+        }
+        await loadUserInfo();
       }
 
       const level = condition === 'good' ? 'ADVANCED' : condition === 'normal' ? 'INTERMEDIATE' : 'BEGINNER';
       const userInput = '집에서 할 수 있는 전신 운동을 추천해줘.';
       
-      const response = await WorkoutService.getExerciseRecommendation(userInput, level, 'HOME_TRAINING');
+      const response = await WorkoutService.getPartExerciseRecommendation(userInput, level, 'HOME_TRAINING');
 
       if (response.success && response.data) {
         const raw = response.data as any;
@@ -262,7 +540,9 @@ const getPartLabel = (exercise: Exercise) =>
           : [];
 
         if (normalizedList.length > 0) {
+          console.log('[WorkoutLogger] 백엔드 추천 응답 (정규화 전):', normalizedList);
           const exercises = normalizedList.map((item, index) => convertRecommendationToExercise(item, index));
+          console.log('[WorkoutLogger] 백엔드 추천 응답 (정규화 후):', exercises.map(ex => ({ name: ex.name, exerciseId: ex.exerciseId })));
           setTodaysRecommendations(exercises);
           return;
         }
@@ -317,7 +597,7 @@ const getPartLabel = (exercise: Exercise) =>
       const level = condition === 'good' ? 'ADVANCED' : condition === 'normal' ? 'INTERMEDIATE' : 'BEGINNER';
       const userInput = `${partLabel} 운동을 추천해줘.`;
       
-      const response = await WorkoutService.getExerciseRecommendation(userInput, level, part);
+      const response = await WorkoutService.getPartExerciseRecommendation(userInput, level, part);
 
       if (response.success && response.data) {
         const raw = response.data as any;
@@ -377,21 +657,141 @@ const getPartLabel = (exercise: Exercise) =>
     return filtered.slice(0, 5).map((exercise) => decorateExercise({ ...exercise, source: 'LOCAL' }));
   };
 
+  // 백엔드에서 저장된 운동을 이름으로 찾아서 ID 반환
+  // 백엔드가 추천 시 UNREGISTERED 상태로 Exercise를 저장하므로
+  // 이름과 part로 검색하여 ID를 찾습니다 (FoodLogger의 resolveFoodIdForRecommendation 참고)
+  // 
+  // 주의: 현재 백엔드에는 UNREGISTERED 상태의 운동을 이름으로 검색하는 API가 없습니다.
+  // getTodayExercises는 REGISTERED 상태만 반환하므로 UNREGISTERED 운동은 찾을 수 없습니다.
+  // 백엔드가 추천 응답에 ID를 포함시키면 자동으로 동작합니다.
+  const resolveExerciseIdForRecommendation = useCallback(async (exerciseName: string, exercisePart?: string): Promise<number | null> => {
+    try {
+      // 오늘의 운동 목록에서 이름으로 찾기 시도 (REGISTERED만 반환되므로 제한적)
+      // 백엔드가 추천 응답에 ID를 포함시키면 이 함수는 사용되지 않을 수 있습니다.
+      const { getTodayExercises } = await import('../../api/exercises');
+      const todayExercises = await getTodayExercises();
+      
+      console.log('[WorkoutLogger] 오늘의 운동 목록 조회 결과:', {
+        exerciseName,
+        exercisePart,
+        todayExercisesCount: todayExercises?.length || 0,
+        todayExercises: todayExercises,
+      });
+      
+      if (Array.isArray(todayExercises)) {
+        // 1. 정확한 매칭: 이름과 part가 일치하고, 아직 사용되지 않은 것
+        const exactMatch = todayExercises.find(
+          ex => 
+            ex.name === exerciseName && 
+            (exercisePart ? ex.part === exercisePart : true) &&
+            ex.id !== null &&
+            !usedExerciseIdsRef.current.has(ex.id)
+        );
+        
+        if (exactMatch?.id) {
+          usedExerciseIdsRef.current.add(exactMatch.id);
+          console.log('[WorkoutLogger] 운동 ID 발견 (정확한 매칭):', {
+            exerciseName,
+            exercisePart,
+            exerciseId: exactMatch.id,
+          });
+          return exactMatch.id;
+        }
+        
+        // 2. 이름만 일치하고 아직 사용되지 않은 것
+        const nameMatch = todayExercises.find(
+          ex => 
+            ex.name === exerciseName && 
+            ex.id !== null &&
+            !usedExerciseIdsRef.current.has(ex.id)
+        );
+        
+        if (nameMatch?.id) {
+          usedExerciseIdsRef.current.add(nameMatch.id);
+          console.log('[WorkoutLogger] 운동 ID 발견 (이름 매칭):', {
+            exerciseName,
+            exerciseId: nameMatch.id,
+          });
+          return nameMatch.id;
+        }
+      }
+      
+      console.log('[WorkoutLogger] 운동 ID를 찾지 못함 (UNREGISTERED 상태는 조회 불가):', {
+        exerciseName,
+        exercisePart,
+        note: '백엔드가 추천 응답에 ID를 포함시키면 자동으로 동작합니다.',
+      });
+      return null;
+    } catch (error: any) {
+      // 검색 실패 시 null 반환 (로컬 저장으로 대체)
+      console.warn('[WorkoutLogger] 운동 ID 검색 실패:', error?.message || error);
+      return null;
+    }
+  }, []);
+
   const addWorkout = async (exercise: Exercise) => {
+    console.log('[WorkoutLogger] addWorkout 호출:', {
+      exerciseName: exercise.name,
+      exerciseId: exercise.exerciseId,
+      exercise: exercise,
+    });
+
     const exists = todaysWorkouts.some(w => w.exercise.id === exercise.id);
     if (exists) {
       Alert.alert('알림', '이미 추가된 운동입니다!');
       return;
     }
 
-    // 백엔드에 운동 등록 시도 (exerciseId가 있는 경우)
-    if (exercise.id && exercise.id.startsWith('ai_')) {
+    // 백엔드에 운동 등록 시도
+    // exerciseId가 없으면 이름으로 ID를 찾아봅니다 (FoodLogger 패턴)
+    let finalExerciseId = exercise.exerciseId;
+    let registerSuccess = false;
+    let registerMessage = '';
+    
+    // exerciseId가 없으면 이름으로 찾기 시도
+    if (!finalExerciseId && exercise.name) {
+      console.log('[WorkoutLogger] exerciseId가 없어 이름으로 ID 찾기 시도:', exercise.name);
+      const foundId = await resolveExerciseIdForRecommendation(exercise.name, exercise.part);
+      if (foundId) {
+        finalExerciseId = foundId;
+        // exercise 객체의 exerciseId 업데이트
+        exercise.exerciseId = foundId;
+        console.log('[WorkoutLogger] 이름으로 운동 ID 찾기 성공:', {
+          exerciseName: exercise.name,
+          exerciseId: foundId,
+        });
+      }
+    }
+    
+    if (finalExerciseId) {
+      console.log('[WorkoutLogger] 백엔드에 운동 등록 시도:', {
+        exerciseId: finalExerciseId,
+        exerciseName: exercise.name,
+      });
+      
       try {
-        // AI 추천 운동의 경우 백엔드에 등록된 exerciseId를 찾아야 함
-        // 일단 로컬에만 저장하고 나중에 백엔드와 동기화
-      } catch (error) {
+        const result = await WorkoutService.registerExercise(finalExerciseId);
+        console.log('[WorkoutLogger] registerExercise 응답:', result);
+        
+        if (result.success) {
+          registerSuccess = true;
+          registerMessage = result.data?.message || '운동이 등록되었습니다.';
+          console.log('[WorkoutLogger] 운동 등록 성공:', finalExerciseId, registerMessage);
+        } else {
+          registerMessage = result.error || '운동 등록에 실패했습니다.';
+          console.log('[WorkoutLogger] 운동 등록 실패:', result.error);
+        }
+      } catch (error: any) {
+        registerMessage = error?.message || '운동 등록 중 오류가 발생했습니다.';
+        console.error('[WorkoutLogger] 운동 등록 예외 발생:', error?.message || error);
+        console.error('[WorkoutLogger] 운동 등록 예외 상세:', error);
         // 백엔드 등록 실패해도 로컬에 저장
       }
+    } else {
+      console.warn('[WorkoutLogger] exerciseId를 찾지 못해 백엔드 등록을 건너뜁니다:', {
+        exerciseName: exercise.name,
+        exercise: exercise,
+      });
     }
 
     const suggestedSets = condition === 'tired' ? 2 : condition === 'normal' ? 3 : 4;
@@ -405,36 +805,82 @@ const getPartLabel = (exercise: Exercise) =>
       weight: 0,
       duration: exercise.isCardio ? workoutTime : undefined,
       memo: '',
-      time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+      time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+      date: new Date().toISOString().split('T')[0], // YYYY-MM-DD 형식으로 날짜 저장
+      source: 'local',
     };
-    setTodaysWorkouts(prev => [...prev, newWorkout]);
+    setTodaysWorkouts(prev => {
+      const updated = [...prev, newWorkout];
+      // 로컬 저장
+      persistLocalWorkoutEntries(updated.filter(entry => entry.source === 'local'));
+      return updated;
+    });
     
     // 추천 목록에서 해당 운동 제거
     setTodaysRecommendations(prev => 
       prev.filter(rec => rec.id !== exercise.id && rec.name !== exercise.name)
     );
     
-    // 로컬 저장
-    try {
-      const saved = await AsyncStorage.getItem('todaysWorkouts');
-      const workouts = saved ? JSON.parse(saved) : [];
-      workouts.push(newWorkout);
-      await AsyncStorage.setItem('todaysWorkouts', JSON.stringify(workouts));
-    } catch (error) {
-      // 저장 실패 시 무시
+    // 운동 추가 후 기록 탭으로 자동 전환
+    setActiveTab('logger');
+    
+    // 백엔드 등록 결과 피드백 표시 (성공 시에만 알림, 실패는 조용히 처리)
+    if (finalExerciseId && registerSuccess) {
+      console.log('[WorkoutLogger] 운동 등록 성공:', registerMessage);
+      // 성공 메시지는 조용히 처리 (사용자 경험 개선)
+    } else if (finalExerciseId && registerMessage && !registerSuccess) {
+      console.warn('[WorkoutLogger] 운동 등록 실패:', registerMessage);
+      // 실패해도 로컬 저장은 완료되었으므로 조용히 처리
     }
   };
 
-  const removeWorkout = (id: string) => {
-    setTodaysWorkouts(prev => prev.filter(entry => entry.id !== id));
+  const removeWorkout = async (id: string) => {
+    const workout = todaysWorkouts.find(entry => entry.id === id);
+    
+    // 백엔드에서 운동 등록 해제 시도 (exerciseId가 있는 경우)
+    let unregisterSuccess = false;
+    let unregisterMessage = '';
+    if (workout?.exercise.exerciseId) {
+      try {
+        const result = await WorkoutService.unregisterExercise(workout.exercise.exerciseId);
+        if (result.success) {
+          unregisterSuccess = true;
+          unregisterMessage = result.data?.message || '운동이 등록 해제되었습니다.';
+          console.log('[WorkoutLogger] 운동 등록 해제 성공:', workout.exercise.exerciseId, unregisterMessage);
+        } else {
+          unregisterMessage = result.error || '운동 등록 해제에 실패했습니다.';
+          console.log('[WorkoutLogger] 운동 등록 해제 실패:', result.error);
+        }
+      } catch (error: any) {
+        unregisterMessage = error?.message || '운동 등록 해제 중 오류가 발생했습니다.';
+        console.error('[WorkoutLogger] 운동 등록 해제 예외 발생:', error?.message || error);
+        // 백엔드 등록 해제 실패해도 로컬에서 제거
+      }
+    }
+    
+    // 로컬 상태에서 제거
+    setTodaysWorkouts(prev => {
+      const updated = prev.filter(entry => entry.id !== id);
+      // 로컬 저장
+      persistLocalWorkoutEntries(updated.filter(entry => entry.source === 'local'));
+      return updated;
+    });
+    
+    // 백엔드 등록 해제 결과 피드백 표시 (선택적)
+    if (workout?.exercise.exerciseId && unregisterMessage && !unregisterSuccess) {
+      Alert.alert('알림', `로컬에서만 제거되었습니다.\n${unregisterMessage}`, [{ text: '확인' }]);
+    }
   };
 
   const updateWorkout = (id: string, field: keyof WorkoutEntry, value: any) => {
-    setTodaysWorkouts(prev =>
-      prev.map(entry =>
-        entry.id === id ? { ...entry, [field]: value } : entry
-      )
-    );
+    setTodaysWorkouts(prev => {
+      const updated = prev.map(entry =>
+        entry.id === id ? { ...entry, [field]: value, source: 'local' as const } : entry
+      );
+      // 로컬 저장
+      persistLocalWorkoutEntries(updated.filter(entry => entry.source === 'local'));
+      return updated;
+    });
   };
 
   const totalCalories = todaysWorkouts.reduce((sum, entry) => {
@@ -502,36 +948,47 @@ const getPartLabel = (exercise: Exercise) =>
     loadTodaysRecommendations();
   }, []);
 
+  // 운동 기록 탭 활성화 시 운동 기록 새로고침
+  useEffect(() => {
+    if (activeTab === 'logger') {
+      loadTodaysWorkouts();
+    }
+  }, [activeTab]);
+
   return (
     <View style={styles.container}>
+      {/* Header - Fixed at Top */}
+      <View style={styles.header}>
+        <View style={styles.titleContainer}>
+          <Icon name="activity" size={24} color="#6366f1" style={{ marginRight: 8 }} />
+          <Text style={styles.title}>운동</Text>
+        </View>
+      </View>
+
+      {/* Tabs - Fixed at Top */}
+      <View style={styles.tabs}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'recommendations' && styles.tabActive]}
+          onPress={() => setActiveTab('recommendations')}
+        >
+          <Text style={[styles.tabText, activeTab === 'recommendations' && styles.tabTextActive]}>
+            운동 추천
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'logger' && styles.tabActive]}
+          onPress={() => setActiveTab('logger')}
+        >
+          <Text style={[styles.tabText, activeTab === 'logger' && styles.tabTextActive]}>
+            운동 기록
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <ScrollView 
         style={styles.scrollView}
         contentContainerStyle={styles.scrollViewContent}
       >
-        <View style={styles.header}>
-          <Text style={styles.title}>운동 💪</Text>
-          <Text style={styles.subtitle}>오늘의 운동을 기록하세요</Text>
-        </View>
-
-        {/* Tabs */}
-        <View style={styles.tabs}>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'recommendations' && styles.tabActive]}
-            onPress={() => setActiveTab('recommendations')}
-          >
-            <Text style={[styles.tabText, activeTab === 'recommendations' && styles.tabTextActive]}>
-              운동 추천
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'logger' && styles.tabActive]}
-            onPress={() => setActiveTab('logger')}
-          >
-            <Text style={[styles.tabText, activeTab === 'logger' && styles.tabTextActive]}>
-              운동 기록
-            </Text>
-          </TouchableOpacity>
-        </View>
 
         {activeTab === 'recommendations' ? (
           <View style={styles.content}>
@@ -557,9 +1014,9 @@ const getPartLabel = (exercise: Exercise) =>
               <Text style={styles.label}>오늘 컨디션</Text>
               <View style={styles.conditionButtons}>
                 {[
-                  { value: 'tired', label: '피곤😴' },
-                  { value: 'normal', label: '보통😊' },
-                  { value: 'good', label: '좋음💪' }
+                  { value: 'tired', label: '피곤', icon: 'moon' },
+                  { value: 'normal', label: '보통', icon: 'smile' },
+                  { value: 'good', label: '좋음', icon: 'zap' }
                 ].map(item => (
                   <TouchableOpacity
                     key={item.value}
@@ -574,6 +1031,12 @@ const getPartLabel = (exercise: Exercise) =>
                       }
                     }}
                   >
+                    <Icon 
+                      name={item.icon as any} 
+                      size={20} 
+                      color={condition === item.value ? '#ffffff' : '#64748b'} 
+                      style={{ marginRight: 8 }}
+                    />
                     <Text style={[
                       styles.conditionButtonText,
                       condition === item.value && styles.conditionButtonTextActive
@@ -598,7 +1061,10 @@ const getPartLabel = (exercise: Exercise) =>
             {/* Today's Recommendations */}
             <Card style={styles.card}>
               <View style={styles.cardHeaderWithRefresh}>
-                <Text style={styles.cardTitle}>오늘의 추천 운동 ⭐</Text>
+                <View style={styles.cardTitleContainer}>
+                  <Icon name="star" size={20} color="#6366f1" style={{ marginRight: 6 }} />
+                  <Text style={styles.cardTitle}>오늘의 추천 운동</Text>
+                </View>
                 <TouchableOpacity 
                   onPress={loadTodaysRecommendations}
                   disabled={loadingRecommendations}
@@ -660,7 +1126,7 @@ const getPartLabel = (exercise: Exercise) =>
                       }
                     }}
                   >
-                    <Text style={styles.bodyPartIcon}>{part.icon}</Text>
+                    <Icon name={part.icon as any} size={24} color={selectedBodyPart === part.id ? '#6366f1' : '#64748b'} />
                     <Text style={styles.bodyPartText}>{part.name}</Text>
                   </TouchableOpacity>
                 ))}
@@ -753,11 +1219,31 @@ const getPartLabel = (exercise: Exercise) =>
 
             {/* Workout List */}
             <Card style={styles.card}>
-              <Text style={styles.cardTitle}>오늘의 운동 기록</Text>
+              <View style={styles.cardHeaderWithRefresh}>
+                <Text style={styles.cardTitle}>오늘의 운동 기록</Text>
+                <TouchableOpacity 
+                  onPress={loadTodaysWorkouts}
+                  style={styles.refreshButton}
+                >
+                  <Text style={styles.refreshIcon}>🔄</Text>
+                </TouchableOpacity>
+              </View>
               {todaysWorkouts.length === 0 ? (
                 <Text style={styles.emptyText}>운동을 추가해보세요!</Text>
               ) : (
-                todaysWorkouts.map(entry => (
+                todaysWorkouts.map((entry, idx) => {
+                  // 디버깅: UI 렌더링 시 실제 값 확인
+                  if (idx === 0) {
+                    console.log('[WorkoutLogger] UI 렌더링 - 첫 번째 항목:', {
+                      name: entry.exercise.name,
+                      sets: entry.sets,
+                      reps: entry.reps,
+                      weight: entry.weight,
+                      source: entry.source,
+                    });
+                  }
+                  
+                  return (
                   <View key={entry.id} style={styles.workoutEntry}>
                     <View style={styles.workoutHeader}>
                       <Text style={styles.workoutName}>{entry.exercise.name}</Text>
@@ -773,8 +1259,13 @@ const getPartLabel = (exercise: Exercise) =>
                           <TextInput
                             style={styles.input}
                             keyboardType="numeric"
-                            value={String(entry.sets)}
-                            onChangeText={(text) => updateWorkout(entry.id, 'sets', parseInt(text) || 0)}
+                            value={entry.sets != null && entry.sets > 0 ? String(entry.sets) : ''}
+                            placeholder="3"
+                            placeholderTextColor="#9ca3af"
+                            onChangeText={(text) => {
+                              const value = text.trim() === '' ? 0 : parseInt(text) || 0;
+                              updateWorkout(entry.id, 'sets', value);
+                            }}
                           />
                         </View>
                         <View style={styles.workoutInput}>
@@ -782,17 +1273,27 @@ const getPartLabel = (exercise: Exercise) =>
                           <TextInput
                             style={styles.input}
                             keyboardType="numeric"
-                            value={String(entry.reps)}
-                            onChangeText={(text) => updateWorkout(entry.id, 'reps', parseInt(text) || 0)}
+                            value={entry.reps != null && entry.reps > 0 ? String(entry.reps) : ''}
+                            placeholder="10"
+                            placeholderTextColor="#9ca3af"
+                            onChangeText={(text) => {
+                              const value = text.trim() === '' ? 0 : parseInt(text) || 0;
+                              updateWorkout(entry.id, 'reps', value);
+                            }}
                           />
                         </View>
                         <View style={styles.workoutInput}>
                           <Text style={styles.inputLabel}>무게(kg)</Text>
                           <TextInput
                             style={styles.input}
-                            keyboardType="numeric"
-                            value={String(entry.weight)}
-                            onChangeText={(text) => updateWorkout(entry.id, 'weight', parseFloat(text) || 0)}
+                            keyboardType="decimal-pad"
+                            value={entry.weight != null && entry.weight > 0 ? String(entry.weight) : ''}
+                            placeholder="0"
+                            placeholderTextColor="#9ca3af"
+                            onChangeText={(text) => {
+                              const value = text.trim() === '' ? 0 : parseFloat(text) || 0;
+                              updateWorkout(entry.id, 'weight', value);
+                            }}
                           />
                         </View>
                       </View>
@@ -812,8 +1313,13 @@ const getPartLabel = (exercise: Exercise) =>
                           <TextInput
                             style={styles.input}
                             keyboardType="numeric"
-                            value={String(entry.reps)}
-                            onChangeText={(text) => updateWorkout(entry.id, 'reps', parseInt(text) || 0)}
+                            value={entry.reps && entry.reps > 0 ? String(entry.reps) : ''}
+                            placeholder="10"
+                            placeholderTextColor="#9ca3af"
+                            onChangeText={(text) => {
+                              const value = text.trim() === '' ? 0 : parseInt(text) || 0;
+                              updateWorkout(entry.id, 'reps', value);
+                            }}
                           />
                         </View>
                       </View>
@@ -829,13 +1335,17 @@ const getPartLabel = (exercise: Exercise) =>
                     />
 
                     <View style={styles.cautions}>
-                      <Text style={styles.cautionsTitle}>⚠️ 주의사항</Text>
+                      <View style={styles.cautionsTitleRow}>
+                        <Icon name="alert-triangle" size={16} color="#f59e0b" />
+                        <Text style={styles.cautionsTitle}>주의사항</Text>
+                      </View>
                       {entry.exercise.cautions.map((caution, idx) => (
                         <Text key={idx} style={styles.cautionText}>• {caution}</Text>
                       ))}
                     </View>
                   </View>
-                ))
+                  );
+                })
               )}
             </Card>
           </View>
@@ -848,7 +1358,7 @@ const getPartLabel = (exercise: Exercise) =>
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#f1f5f9',
   },
   scrollView: {
     flex: 1,
@@ -857,37 +1367,41 @@ const styles = StyleSheet.create({
     paddingBottom: 80,
   },
   header: {
-    padding: 20,
-    paddingTop: 50,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    paddingTop: 50,
     backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    marginBottom: 4,
+    zIndex: 10,
+  },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   title: {
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#0f172a',
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: '#64748b',
-    marginTop: 6,
-    fontWeight: '500',
+    letterSpacing: -0.8,
   },
   tabs: {
     flexDirection: 'row',
+    backgroundColor: '#fff',
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 16,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1.5,
+    paddingTop: 8,
+    borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
-    marginBottom: 20,
+    zIndex: 10,
   },
   tab: {
     flex: 1,
@@ -913,12 +1427,16 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   card: {
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    marginBottom: 24,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+    overflow: 'hidden',
   },
   cardTitle: {
     fontSize: 18,
@@ -996,34 +1514,43 @@ const styles = StyleSheet.create({
   },
   conditionButtons: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 12,
+    marginBottom: 4,
   },
   conditionButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1.5,
+    paddingVertical: 16,
+    borderRadius: 20,
+    borderWidth: 2.5,
     borderColor: '#e2e8f0',
-    alignItems: 'center',
     backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
   conditionButtonActive: {
     backgroundColor: '#6366f1',
-    borderColor: '#6366f1',
+    borderColor: '#4f46e5',
     shadowColor: '#6366f1',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+    transform: [{ scale: 1.02 }],
   },
   conditionButtonText: {
-    fontSize: 14,
+    fontSize: 15,
     color: '#64748b',
     fontWeight: '600',
   },
   conditionButtonTextActive: {
     color: '#ffffff',
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   exerciseCard: {
     flexDirection: 'row',
@@ -1111,9 +1638,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#007AFF',
     borderColor: '#007AFF',
   },
-  bodyPartIcon: {
-    fontSize: 24,
-    marginBottom: 4,
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cardTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  conditionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cautionsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
   },
   bodyPartText: {
     fontSize: 12,

@@ -7,6 +7,8 @@ import { ServiceResult } from '../types/service';
 /**
  * Food response interface (from backend)
  * Matches Swagger API specification
+ * 백엔드: FoodResponse (BigDecimal, Long 타입)
+ * - weight: Long -> number (그램 수)
  */
 export interface FoodResponse {
   id: number;
@@ -17,20 +19,24 @@ export interface FoodResponse {
   fat?: number;
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number; // Long -> number (그램 수)
 }
 
 /**
  * Food recommendation interface
  * Matches Swagger API specification
+ * 백엔드: FoodRecommendation (BigDecimal, Long 타입)
+ * - weight: Long -> number or string (그램 수)
  */
 export interface FoodRecommendation {
   name: string;
-  calory?: number; // Note: backend uses "calory" not "calories"
-  carbohydrate?: number; // Note: backend uses "carbohydrate" not "carbs"
-  protein?: number;
-  fat?: number;
+  calory?: number | string; // Note: backend uses "calory" not "calories"
+  carbohydrate?: number | string; // Note: backend uses "carbohydrate" not "carbs"
+  protein?: number | string;
+  fat?: number | string;
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number | string; // Long -> number or string (그램 수)
 }
 
 /**
@@ -202,7 +208,7 @@ export class FoodService {
   
   /**
    * Get food recommendations
-   * 백엔드: GET /api/food/recommend
+   * 백엔드: POST /api/food/recommend
    * 
    * 이제 우리가 만든 client.ts 기반 API를 사용합니다.
    * client.ts는 AsyncStorage의 @sessionCookie를 자동으로 헤더에 추가합니다.
@@ -265,14 +271,14 @@ export class FoodService {
 
   /**
    * Get recipe recommendation based on user input
-   * 백엔드: GET /api/food/recipe/recommend (⚠️ @RequestBody 있음 - 비표준)
+   * 백엔드: POST /api/food/recipe/recommend
    * 
    * Note: Requires authentication
-   * 백엔드가 GET 메서드에 @RequestBody를 사용하므로 WebView를 통해 처리합니다.
+   * POST 메서드로 body 전송
    */
   static async getRecipeRecommendation(userInput: string): Promise<ServiceResult<FoodRecommendation>> {
     try {
-      // 백엔드가 GET 메서드에 @RequestBody를 사용하므로 requestWithWebViewFallback 사용
+      // POST 요청으로 body 전송
       const { recommendRecipe } = await import('../api/foods');
       const result = await recommendRecipe({ userInput });
       

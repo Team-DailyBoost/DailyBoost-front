@@ -105,6 +105,10 @@ export class UserService {
    * Recover user account
    * 백엔드: POST /api/user/recover
    * 
+   * 에러 처리:
+   * - errorCode 1103: "인증 코드가 일치하지 않습니다."
+   * - errorCode 1104: "인증 코드가 만료되었거나 존재하지 않습니다."
+   * 
    * OpenAPI 명세에 맞춰 수정됨
    */
   static async recoverAccount(request: VerifyCodeRequest) {
@@ -112,6 +116,7 @@ export class UserService {
       const result = await recoverUserAccountApi(request);
       return { success: true, data: result };
     } catch (error: any) {
+      // 에러 메시지는 users.ts에서 이미 구체적으로 처리됨
       return { success: false, error: error?.message || '계정 복구 실패' };
     }
   }
@@ -119,12 +124,17 @@ export class UserService {
   /**
    * Send account recovery email
    * 백엔드: POST /api/email/htmlEmail
+   * 
+   * 에러 처리:
+   * - 정상 계정: "이 계정은 정상적인 계정입니다. 로그인을 시도해주세요."
+   * - 재발송 제한: "이메일 전송은 30초에 한 번만 가능합니다. 잠시 후 다시 시도해주세요."
    */
   static async sendRecoveryEmail(email: string) {
     try {
       const result = await sendHtmlEmail({ emailAddr: email });
       return { success: true, data: result };
     } catch (error: any) {
+      // 에러 메시지는 email.ts에서 이미 구체적으로 처리됨
       return { success: false, error: error?.message || '이메일 전송에 실패했습니다.' };
     }
   }

@@ -40,17 +40,20 @@ export const CardContent: React.FC<CardContentProps> = ({ children, style }) => 
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 20,
-    padding: 20,
-    marginVertical: 8,
-    shadowColor: '#000',
+    borderRadius: 28,
+    padding: 28,
+    marginVertical: 10,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    shadowColor: '#6366f1',
     shadowOffset: {
       width: 0,
-      height: 2,
+      height: 8,
     },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 10,
+    overflow: 'hidden',
   },
   cardHeader: {
     marginBottom: 16,

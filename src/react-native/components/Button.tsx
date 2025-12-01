@@ -68,7 +68,7 @@ export const Button: React.FC<ButtonProps> = ({
 
 const styles = StyleSheet.create({
   button: {
-    borderRadius: 8,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -76,6 +76,13 @@ const styles = StyleSheet.create({
   // Variants
   default: {
     backgroundColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
+    borderWidth: 2,
+    borderColor: '#4f46e5',
   },
   outline: {
     backgroundColor: 'transparent',

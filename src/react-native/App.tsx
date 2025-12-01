@@ -33,6 +33,11 @@ function AuthStackNavigator({ onLoggedIn }: { onLoggedIn: () => void }) {
   );
 }
 
+// 챌린지 컴포넌트 (Stack Navigator 대신 직접 컴포넌트 사용)
+function ChallengeStackNavigator() {
+  return <Challenge />;
+}
+
 // 로그인 이후 탭 네비게이터
 function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
   return (
@@ -86,7 +91,7 @@ function MainTabs({ onLoggedOut }: { onLoggedOut: () => void }) {
       <Tab.Screen name="홈" component={Dashboard} />
       <Tab.Screen name="식단" component={FoodLogger} />
       <Tab.Screen name="운동" component={WorkoutLogger} />
-      <Tab.Screen name="챌린지" component={Challenge} />
+      <Tab.Screen name="챌린지" component={ChallengeStackNavigator} />
       <Tab.Screen name="커뮤니티" component={Community} />
       <Tab.Screen name="마이">
         {() => <MyPage onLoggedOut={onLoggedOut} />}

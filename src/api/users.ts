@@ -203,7 +203,23 @@ export async function recoverUserAccount(request: VerifyCodeRequest): Promise<Me
     return response;
   } catch (error: any) {
     const message = String(error?.message || '');
-    console.log('[User API] 계정 복구 실패:', message);
+    const errorCode = error?.response?.data?.errorCode;
+    const description = error?.response?.data?.description || '';
+    
+    console.log('[User API] 계정 복구 실패:', message, 'errorCode:', errorCode);
+    
+    // 백엔드 에러 코드에 따른 구체적인 메시지
+    if (errorCode === 1103) {
+      // VERIFICATION_CODE_MISMATCH
+      throw new Error('인증 코드가 일치하지 않습니다. 다시 확인해주세요.');
+    } else if (errorCode === 1104) {
+      // VERIFICATION_CODE_EXPIRED_OR_NOT_FOUND
+      throw new Error('인증 코드가 만료되었거나 존재하지 않습니다. 이메일을 다시 요청해주세요.');
+    } else if (description) {
+      // 백엔드에서 제공한 설명 메시지 사용
+      throw new Error(description);
+    }
+    
     throw error;
   }
 }

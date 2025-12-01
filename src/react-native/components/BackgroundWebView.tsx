@@ -133,7 +133,22 @@ export function BackgroundWebView() {
         if (t === 'debug:log') {
           console.log('[WebView Debug]', data?.message || '', data?.data || data);
         } else if (t === 'debug:error') {
-          console.error('[WebView Error]', data?.message || '', data?.data || data);
+          // 게시글/댓글 작성 API 에러는 조용히 처리 (로컬 저장으로 대체되므로)
+          const errorData = data?.data || {};
+          const errorPath = errorData?.path || errorData?.url || '';
+          const isPostCreateError = errorPath.includes('/api/post/create') && errorData?.status === 500;
+          const isCommentCreateError = errorPath.includes('/api/comment/create') && errorData?.status === 500;
+          
+          if (!isPostCreateError && !isCommentCreateError) {
+            console.error('[WebView Error]', data?.message || '', data?.data || data);
+          } else {
+            // 게시글/댓글 작성 500 에러는 조용히 처리 (로컬 저장으로 대체)
+            if (isPostCreateError) {
+              console.log('[WebView] 게시글 작성 서버 오류 (로컬 저장으로 대체)');
+            } else if (isCommentCreateError) {
+              console.log('[WebView] 댓글 작성 서버 오류 (로컬 저장으로 대체)');
+            }
+          }
         }
         WebViewManager.handleGenericApiResponse(data);
         return;

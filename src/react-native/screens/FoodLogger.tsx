@@ -871,9 +871,9 @@ export function FoodLogger() {
               };
 
               const mealTypeLabels = {
-                breakfast: { label: '🌅 아침', color: '#FF9800' },
-                lunch: { label: '🌞 점심', color: '#2196F3' },
-                dinner: { label: '🌙 저녁', color: '#9C27B0' },
+                breakfast: { label: '아침', icon: 'sunrise', color: '#FF9800' },
+                lunch: { label: '점심', icon: 'sun', color: '#2196F3' },
+                dinner: { label: '저녁', icon: 'moon', color: '#9C27B0' },
               };
 
               return (
@@ -887,9 +887,12 @@ export function FoodLogger() {
                     return (
                       <View key={mealType} style={styles.mealTypeGroup}>
                         <View style={styles.mealTypeHeader}>
-                          <Text style={[styles.mealTypeLabel, { color: typeInfo.color }]}>
-                            {typeInfo.label}
-                          </Text>
+                          <View style={styles.mealTypeLabelContainer}>
+                            <Icon name={typeInfo.icon as any} size={20} color={typeInfo.color} style={{ marginRight: 8 }} />
+                            <Text style={[styles.mealTypeLabel, { color: typeInfo.color }]}>
+                              {typeInfo.label}
+                            </Text>
+                          </View>
                         </View>
                         {meals.map((meal) => (
                           <View key={meal.id} style={styles.mealSection}>
@@ -1130,15 +1133,15 @@ export function FoodLogger() {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* Header - Fixed at Top */}
       <View style={styles.header}>
-        <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>식단 🍽️</Text>
-          <Text style={styles.headerSubtitle}>오늘의 식단을 기록하고 추천받으세요</Text>
+        <View style={styles.titleContainer}>
+          <Icon name="coffee" size={24} color="#6366f1" style={{ marginRight: 8 }} />
+          <Text style={styles.title}>식단</Text>
         </View>
       </View>
 
-      {/* Tab Navigation - Top */}
+      {/* Tab Navigation - Fixed at Top */}
       <View style={styles.tabContainer}>
         {(['식단추천', '추적', '기록', 'AI레시피'] as const).map((tab, index) => {
           const tabKeys: TabType[] = ['recommend', 'track', 'record', 'ai'];
@@ -1169,6 +1172,7 @@ export function FoodLogger() {
           showsVerticalScrollIndicator={true}
           nestedScrollEnabled={true}
         >
+
           {activeTab === 'record' && renderRecordTab()}
           {activeTab === 'track' && renderTrackTab()}
           {activeTab === 'recommend' && renderRecommendTab()}
@@ -1182,71 +1186,63 @@ export function FoodLogger() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#f1f5f9',
   },
   header: {
-    padding: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 20,
     paddingTop: 50,
     backgroundColor: '#ffffff',
-    borderBottomWidth: 0,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    marginBottom: 4,
+    zIndex: 10,
   },
-  headerContent: {
+  titleContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
-  headerTitle: {
+  title: {
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#0f172a',
-    marginBottom: 6,
-    letterSpacing: -0.5,
+    letterSpacing: -0.8,
   },
-  headerSubtitle: {
+  tabContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    zIndex: 10,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderBottomWidth: 3,
+    borderBottomColor: 'transparent',
+    marginHorizontal: 4,
+  },
+  activeTab: {
+    borderBottomColor: '#6366f1',
+  },
+  tabText: {
     fontSize: 15,
     color: '#64748b',
     fontWeight: '500',
   },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 16,
-    gap: 10,
-    borderBottomWidth: 1.5,
-    borderBottomColor: '#e2e8f0',
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1.5,
-    borderColor: '#e2e8f0',
-  },
-  activeTab: {
-    backgroundColor: '#6366f1',
-    borderColor: '#6366f1',
-    shadowColor: '#6366f1',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  tabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748b',
-  },
   activeTabText: {
-    color: '#ffffff',
+    color: '#6366f1',
     fontWeight: '700',
   },
   keyboardAvoidingView: {
@@ -1260,14 +1256,16 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 20,
-    marginBottom: 20,
-    borderWidth: 0,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    borderRadius: 28,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+    overflow: 'hidden',
   },
   cardHeader: {
     flexDirection: 'row',

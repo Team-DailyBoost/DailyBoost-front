@@ -195,10 +195,20 @@ class WebViewManagerClass {
                           xhr.withCredentials = true;
                           
                           // 헤더 설정 (Authorization 토큰 포함)
+                          // FormData의 경우 Content-Type은 자동으로 설정되므로 제외
+                          // Accept 헤더는 명시적으로 추가 (백엔드가 JSON 응답을 반환하도록)
+                          try {
+                            xhr.setRequestHeader('Accept', 'application/json');
+                          } catch (e) {
+                            console.log('[WebView] Accept 헤더 설정 실패:', e);
+                          }
+                          
                           Object.keys(headers).forEach(function(key) {
                             try {
+                              var lowerKey = key.toLowerCase();
                               // FormData의 경우 Content-Type은 자동으로 설정되므로 제외
-                              if (key.toLowerCase() !== 'content-type') {
+                              // Accept는 이미 설정했으므로 제외
+                              if (lowerKey !== 'content-type' && lowerKey !== 'accept') {
                                 xhr.setRequestHeader(key, headers[key]);
                               }
                             } catch (e) {
@@ -211,21 +221,24 @@ class WebViewManagerClass {
                           Object.entries(formDataFields).forEach(function([key, value]) {
                             if (key === 'postCreateRequest' || key === 'commentRequest' || key === 'postUpdateRequest' || key === 'commentUpdateRequest' || key === 'userUpdateRequest') {
                               // Spring Boot @RequestPart: JSON part는 Content-Type이 application/json이어야 함
+                              // JSON 문자열을 Blob으로 변환하여 Content-Type을 명시적으로 설정
                               var jsonString = JSON.stringify(value);
-                              // WebView에서 File 객체가 지원되는지 확인 후 사용, 아니면 Blob 사용
-                              if (typeof File !== 'undefined') {
-                                try {
-                                  var jsonFile = new File([jsonString], key + '.json', { type: 'application/json' });
-                                  formData.append(key, jsonFile);
-                                } catch (e) {
-                                  // File 생성 실패 시 Blob 사용
-                                  var jsonBlob = new Blob([jsonString], { type: 'application/json' });
-                                  formData.append(key, jsonBlob, key + '.json');
-                                }
-                              } else {
-                                // File 객체가 없으면 Blob 사용
-                                var jsonBlob = new Blob([jsonString], { type: 'application/json' });
-                                formData.append(key, jsonBlob, key + '.json');
+                              var jsonBlob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+                              // FormData.append()의 세 번째 인자로 파일 이름 지정 (확장자 .json 포함)
+                              // Content-Disposition 헤더가 자동으로 설정되도록 파일 이름 사용
+                              formData.append(key, jsonBlob, key + '.json');
+                              
+                              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({
+                                  type: 'debug:log',
+                                  message: '[WebView Script] JSON part 추가',
+                                  data: {
+                                    key: key,
+                                    jsonString: jsonString.substring(0, 100),
+                                    blobType: jsonBlob.type,
+                                    blobSize: jsonBlob.size
+                                  }
+                                }));
                               }
                             } else if ((key === 'file' || key === 'files') && value && typeof value === 'object') {
                               // file (단수) 또는 files (복수 배열) 처리
@@ -240,15 +253,36 @@ class WebViewManagerClass {
                                     }
                                     var byteArray = new Uint8Array(byteNumbers);
                                     
-                                    // 파일 이름 정리 (특수 문자 제거)
+                                    // 파일 이름 정리 및 검증 (백엔드 호환성)
+                                    // 백엔드에서 file.getOriginalFilename()이 null이면 에러 발생
                                     var fileName = value.name || 'image.jpg';
-                                    // 파일 확장자 확인 및 보정
-                                    if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
-                                      var ext = value.type.split('/')[1] || 'jpg';
-                                      fileName = fileName.replace(/\.[^.]*$/, '') + '.' + ext;
+                                    
+                                    // 파일 이름에서 특수 문자 제거
+                                    fileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                                    
+                                    // 확장자 확인 및 보정
+                                    var mimeExt = value.type ? value.type.split('/')[1] : 'jpg';
+                                    if (!mimeExt || !['jpg', 'jpeg', 'png', 'webp'].includes(mimeExt.toLowerCase())) {
+                                      mimeExt = 'jpg';
                                     }
                                     
-                                    var blob = new Blob([byteArray], { type: value.type });
+                                    // 확장자가 없으면 추가
+                                    if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                                      fileName = fileName.replace(/\.[^.]*$/, '') + '.' + mimeExt;
+                                    } else {
+                                      // 확장자가 있지만 허용되지 않은 확장자면 jpg로 변경
+                                      var currentExt = fileName.split('.').pop()?.toLowerCase();
+                                      if (!currentExt || !['jpg', 'jpeg', 'png', 'webp'].includes(currentExt)) {
+                                        fileName = fileName.replace(/\.[^.]*$/, '') + '.jpg';
+                                      }
+                                    }
+                                    
+                                    // 파일 이름이 비어있거나 너무 짧으면 기본값 사용
+                                    if (!fileName || fileName.length < 4) {
+                                      fileName = 'image.' + mimeExt;
+                                    }
+                                    
+                                    var blob = new Blob([byteArray], { type: value.type || 'image/jpeg' });
                                     formData.append('file', blob, fileName);
                                     
                                     if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -280,17 +314,41 @@ class WebViewManagerClass {
                                         }
                                         var byteArray = new Uint8Array(byteNumbers);
                                         
-                                        // 파일 이름 정리 (특수 문자 제거)
+                                        // 파일 이름 정리 및 검증
+                                        // 백엔드에서 file.getOriginalFilename()이 null이면 에러 발생
+                                        // 확장자가 없으면 FileUtils.getExtension()에서 에러 발생
                                         var fileName = file.name || 'image_' + index + '.jpg';
-                                        // 파일 확장자 확인 및 보정
-                                        if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
-                                          var ext = file.type.split('/')[1] || 'jpg';
-                                          fileName = fileName.replace(/\.[^.]*$/, '') + '.' + ext;
+                                        
+                                        // 파일 이름에서 특수 문자 제거 (백엔드 호환성)
+                                        fileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                                        
+                                        // 확장자 확인 및 보정 (반드시 확장자가 있어야 함)
+                                        var mimeExt = file.type ? file.type.split('/')[1] : 'jpg';
+                                        if (!mimeExt || !['jpg', 'jpeg', 'png', 'webp'].includes(mimeExt.toLowerCase())) {
+                                          mimeExt = 'jpg';
                                         }
                                         
-                                        var blob = new Blob([byteArray], { type: file.type });
+                                        // 확장자가 없으면 추가
+                                        if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                                          // 기존 확장자 제거 후 새 확장자 추가
+                                          fileName = fileName.replace(/\.[^.]*$/, '') + '.' + mimeExt;
+                                        } else {
+                                          // 확장자가 있지만 허용되지 않은 확장자면 jpg로 변경
+                                          var currentExt = fileName.split('.').pop()?.toLowerCase();
+                                          if (!currentExt || !['jpg', 'jpeg', 'png', 'webp'].includes(currentExt)) {
+                                            fileName = fileName.replace(/\.[^.]*$/, '') + '.jpg';
+                                          }
+                                        }
+                                        
+                                        // 파일 이름이 비어있거나 너무 짧으면 기본값 사용
+                                        if (!fileName || fileName.length < 4) {
+                                          fileName = 'image_' + index + '.' + mimeExt;
+                                        }
+                                        
+                                        var blob = new Blob([byteArray], { type: file.type || 'image/jpeg' });
                                         
                                         // Spring Boot에서 List<MultipartFile>을 받으려면 같은 이름 'files'로 append
+                                        // 세 번째 인자로 파일 이름을 명시적으로 전달 (getOriginalFilename()에서 사용됨)
                                         formData.append('files', blob, fileName);
                                         
                                         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -645,26 +703,24 @@ class WebViewManagerClass {
                               // Spring Boot @RequestPart: part 이름은 파라미터 이름 "postCreateRequest" 사용
                               // Content-Type: application/json이어야 JSON 파싱
                               // 
-                              // Android WebView에서 FormData.append()를 사용할 때
-                              // Blob/File의 type이 Content-Type으로 제대로 설정되지 않을 수 있음
-                              // 따라서 File 객체를 명시적으로 사용하고 Content-Type을 확실히 설정
+                              // Spring Boot @RequestPart: JSON part는 Content-Type이 application/json이어야 함
+                              // JSON 문자열을 Blob으로 변환하여 Content-Type을 명시적으로 설정
+                              var jsonBlob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+                              // FormData.append()의 세 번째 인자로 파일 이름 지정 (확장자 .json 포함)
+                              // Content-Disposition 헤더가 자동으로 설정되도록 파일 이름 사용
+                              fd.append(key, jsonBlob, key + '.json');
                               
-                              // File 객체 생성 (filename 있음 - Spring Boot는 filename을 무시하고 JSON 파싱)
-                              try {
-                                if (typeof File !== 'undefined') {
-                                  var jsonFile = new File([jsonString], 'postCreateRequest.json', { 
-                                    type: 'application/json'
-                                  });
-                                  fd.append(key, jsonFile);
-                                } else {
-                                  // File이 없으면 Blob 사용
-                                  var jsonBlob = new Blob([jsonString], { type: 'application/json' });
-                                  fd.append(key, jsonBlob, 'postCreateRequest.json');
-                                }
-                              } catch (e) {
-                                // File 생성 실패 시 Blob으로 fallback
-                                var jsonBlob = new Blob([jsonString], { type: 'application/json' });
-                                fd.append(key, jsonBlob);
+                              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({
+                                  type: 'debug:log',
+                                  message: '[WebView Script] JSON part 추가 (인라인)',
+                                  data: {
+                                    key: key,
+                                    jsonString: jsonString.substring(0, 100),
+                                    blobType: jsonBlob.type,
+                                    blobSize: jsonBlob.size
+                                  }
+                                }));
                               }
                               
                             } else if ((key === 'file' || key === 'files') && value && typeof value === 'object') {
@@ -679,8 +735,37 @@ class WebViewManagerClass {
                                       byteNumbers[i] = byteCharacters.charCodeAt(i);
                                     }
                                     var byteArray = new Uint8Array(byteNumbers);
-                                    var blob = new Blob([byteArray], { type: value.type });
-                                    fd.append('file', blob, value.name);
+                                    
+                                    // 파일 이름 정리 및 검증 (백엔드 호환성)
+                                    var fileName = value.name || 'image.jpg';
+                                    
+                                    // 파일 이름에서 특수 문자 제거
+                                    fileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                                    
+                                    // 확장자 확인 및 보정
+                                    var mimeExt = value.type ? value.type.split('/')[1] : 'jpg';
+                                    if (!mimeExt || !['jpg', 'jpeg', 'png', 'webp'].includes(mimeExt.toLowerCase())) {
+                                      mimeExt = 'jpg';
+                                    }
+                                    
+                                    // 확장자가 없으면 추가
+                                    if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                                      fileName = fileName.replace(/\.[^.]*$/, '') + '.' + mimeExt;
+                                    } else {
+                                      // 확장자가 있지만 허용되지 않은 확장자면 jpg로 변경
+                                      var currentExt = fileName.split('.').pop()?.toLowerCase();
+                                      if (!currentExt || !['jpg', 'jpeg', 'png', 'webp'].includes(currentExt)) {
+                                        fileName = fileName.replace(/\.[^.]*$/, '') + '.jpg';
+                                      }
+                                    }
+                                    
+                                    // 파일 이름이 비어있거나 너무 짧으면 기본값 사용
+                                    if (!fileName || fileName.length < 4) {
+                                      fileName = 'image.' + mimeExt;
+                                    }
+                                    
+                                    var blob = new Blob([byteArray], { type: value.type || 'image/jpeg' });
+                                    fd.append('file', blob, fileName);
                                     
                                     // 디버깅: 파일 추가 로깅
                                     if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -716,8 +801,37 @@ class WebViewManagerClass {
                                           byteNumbers[i] = byteCharacters.charCodeAt(i);
                                         }
                                         var byteArray = new Uint8Array(byteNumbers);
-                                        var blob = new Blob([byteArray], { type: file.type });
-                                        fd.append('files', blob, file.name);
+                                        
+                                        // 파일 이름 정리 및 검증 (백엔드 호환성)
+                                        var fileName = file.name || 'image_' + index + '.jpg';
+                                        
+                                        // 파일 이름에서 특수 문자 제거
+                                        fileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                                        
+                                        // 확장자 확인 및 보정
+                                        var mimeExt = file.type ? file.type.split('/')[1] : 'jpg';
+                                        if (!mimeExt || !['jpg', 'jpeg', 'png', 'webp'].includes(mimeExt.toLowerCase())) {
+                                          mimeExt = 'jpg';
+                                        }
+                                        
+                                        // 확장자가 없으면 추가
+                                        if (!fileName.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                                          fileName = fileName.replace(/\.[^.]*$/, '') + '.' + mimeExt;
+                                        } else {
+                                          // 확장자가 있지만 허용되지 않은 확장자면 jpg로 변경
+                                          var currentExt = fileName.split('.').pop()?.toLowerCase();
+                                          if (!currentExt || !['jpg', 'jpeg', 'png', 'webp'].includes(currentExt)) {
+                                            fileName = fileName.replace(/\.[^.]*$/, '') + '.jpg';
+                                          }
+                                        }
+                                        
+                                        // 파일 이름이 비어있거나 너무 짧으면 기본값 사용
+                                        if (!fileName || fileName.length < 4) {
+                                          fileName = 'image_' + index + '.' + mimeExt;
+                                        }
+                                        
+                                        var blob = new Blob([byteArray], { type: file.type || 'image/jpeg' });
+                                        fd.append('files', blob, fileName);
                                         
                                         // 디버깅: 파일 추가 로깅
                                         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -841,15 +955,18 @@ class WebViewManagerClass {
                           xhr.open('GET', fullUrl, true);
                           xhr.withCredentials = true;
                           
-                          // Content-Type을 먼저 설정 (Spring Boot가 @RequestBody를 받으려면 필수)
+                          // GET + body 요청을 위한 헤더 설정
+                          // Spring Boot가 @RequestBody를 받으려면 Content-Type과 Accept가 필요
                           try {
                             xhr.setRequestHeader('Content-Type', 'application/json;charset=utf-8');
+                            xhr.setRequestHeader('Accept', 'application/json');
                           } catch (e) {}
                           
-                          // 나머지 헤더 설정 (Authorization 등) - Content-Type 제외
+                          // 나머지 헤더 설정 (Authorization 등) - Content-Type과 Accept 제외
                           Object.keys(headers).forEach(function(key) {
                             try {
-                              if (key.toLowerCase() !== 'content-type') {
+                              var lowerKey = key.toLowerCase();
+                              if (lowerKey !== 'content-type' && lowerKey !== 'accept') {
                                 xhr.setRequestHeader(key, headers[key]);
                               }
                             } catch (e) {}

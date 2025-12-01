@@ -16,6 +16,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { UserService } from '../../services/userService';
+import { Feather as Icon } from '@expo/vector-icons';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -36,12 +37,12 @@ const TIER_NAMES = {
 };
 
 const TIER_ICONS = {
-  bronze: '🥉',
-  silver: '🥈',
-  gold: '🥇',
-  platinum: '💎',
-  diamond: '👑',
-};
+  bronze: 'award',
+  silver: 'award',
+  gold: 'award',
+  platinum: 'gem',
+  diamond: 'crown',
+} as const;
 
 type HealthGoal =
   | 'WEIGHT_LOSS'
@@ -543,9 +544,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                 )}
                 {userProgress && (
                   <View style={styles.tierBadge}>
-                    <Text style={styles.tierIcon}>
-                      {TIER_ICONS[userProgress.tier]}
-                    </Text>
+                    <Icon name={TIER_ICONS[userProgress.tier] as any} size={24} color="#6366f1" />
                     <Text style={styles.tierText}>
                       {TIER_NAMES[userProgress.tier]}
                     </Text>
@@ -691,7 +690,12 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>프로필 수정</Text>
+            <ScrollView
+              contentContainerStyle={styles.modalScrollContentContainer}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={true}
+            >
+              <Text style={styles.modalTitle}>프로필 수정</Text>
 
             <Text style={styles.modalLabel}>이름</Text>
             <TextInput
@@ -750,7 +754,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               <View style={styles.modalColumn}>
                 <Text style={styles.modalLabel}>키 (cm)</Text>
                 <TextInput
-                  style={styles.modalInput}
+                  style={styles.modalColumnInput}
                   placeholder="키"
                   keyboardType="numeric"
                   value={editForm.height}
@@ -760,7 +764,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               <View style={styles.modalColumn}>
                 <Text style={styles.modalLabel}>몸무게 (kg)</Text>
                 <TextInput
-                  style={styles.modalInput}
+                  style={styles.modalColumnInput}
                   placeholder="몸무게"
                   keyboardType="numeric"
                   value={editForm.weight}
@@ -796,7 +800,6 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
               <Button
                 title="취소"
                 onPress={() => setShowEditModal(false)}
-                variant="outline"
               />
               <Button
                 title="저장"
@@ -863,6 +866,7 @@ export function MyPage({ onLoggedOut }: { onLoggedOut?: () => void }) {
                 }}
               />
             </View>
+          </ScrollView>
           </View>
         </View>
       </Modal>
@@ -912,12 +916,16 @@ const styles = StyleSheet.create({
     fontSize: 22,
   },
   profileCard: {
-    margin: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    margin: 24,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+    overflow: 'hidden',
   },
   profileHeader: {
     flexDirection: 'row',
@@ -1003,9 +1011,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1.5,
     borderColor: '#6366f1',
-  },
-  tierIcon: {
-    fontSize: 16,
   },
   tierText: {
     fontSize: 13,
@@ -1126,101 +1131,140 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 24,
     padding: 20,
-    width: '90%',
-    maxHeight: '90%',
+    width: '85%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 30,
+    elevation: 10,
+    alignSelf: 'center',
+  },
+  modalScrollContentContainer: {
+    paddingVertical: 10,
   },
   modalTitle: {
     fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 20,
-    textAlign: 'center',
+    fontWeight: '700',
+    marginBottom: 16,
+    color: '#0f172a',
+    letterSpacing: -0.5,
   },
   modalLabel: {
     fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
-    marginTop: 12,
-    color: '#333',
   },
   modalInput: {
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    fontSize: 16,
-    color: '#000',
-    marginBottom: 4,
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    marginBottom: 16,
+    fontSize: 15,
+    color: '#0f172a',
   },
   modalRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 4,
+    gap: 8,
+    marginBottom: 12,
   },
   modalColumn: {
     flex: 1,
   },
+  modalColumnInput: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    marginBottom: 0,
+    fontSize: 15,
+    color: '#0f172a',
+  },
   genderButton: {
     flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   genderButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   genderButtonText: {
     fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
+    color: '#64748b',
+    fontWeight: '600',
   },
   genderButtonTextActive: {
-    color: '#fff',
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   goalButtons: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 12,
   },
   goalButton: {
     paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   goalButtonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+    shadowColor: '#6366f1',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   goalButtonText: {
     fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
+    color: '#64748b',
+    fontWeight: '600',
   },
   goalButtonTextActive: {
-    color: '#fff',
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   modalButtons: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 20,
+    gap: 8,
+    marginTop: 12,
   },
 });

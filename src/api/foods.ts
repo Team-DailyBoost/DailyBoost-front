@@ -12,9 +12,9 @@
  * 구현된 엔드포인트:
  * - GET /api/food/today: 일일 식단 조회
  * - GET /api/food/weekly: 주간 식단 조회
- * - GET /api/food/recommend: 하루 음식 추천
+ * - POST /api/food/recommend: 하루 음식 추천
  * - GET /api/food?keyword=...: 음식 키워드 검색
- * - GET /api/food/recipe/recommend: 레시피 추천
+ * - POST /api/food/recipe/recommend: 레시피 추천
  * - POST /api/food/register/{foodId}: 식단 기록에 추가
  * - POST /api/food/unregister/{foodId}: 식단 기록에서 제거
  * - POST /api/food/reset: 일일 식단 초기화
@@ -27,7 +27,9 @@ import { RecipeRequest } from './types';
 
 /**
  * Food Response 타입
- * Swagger 명세의 components.schemas.FoodResponse를 그대로 옮긴 것입니다.
+ * 백엔드: FoodResponse (BigDecimal, Long 타입)
+ * - calory, carbohydrate, protein, fat: BigDecimal -> number
+ * - weight: Long -> number (그램 수)
  */
 export interface FoodResponse {
   id: number;
@@ -38,20 +40,24 @@ export interface FoodResponse {
   fat?: number;
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number; // Long -> number (그램 수)
 }
 
 /**
  * Food Recommendation 타입
- * Swagger 명세의 components.schemas.FoodRecommendation을 그대로 옮긴 것입니다.
+ * 백엔드: FoodRecommendation (BigDecimal, Long 타입)
+ * - calory, carbohydrate, protein, fat: BigDecimal -> number or string
+ * - weight: Long -> number or string (그램 수)
  */
 export interface FoodRecommendation {
   name: string;
-  calory?: number;
-  carbohydrate?: number;
-  protein?: number;
-  fat?: number;
+  calory?: number | string; // BigDecimal -> number or string
+  carbohydrate?: number | string; // BigDecimal -> number or string
+  protein?: number | string; // BigDecimal -> number or string
+  fat?: number | string; // BigDecimal -> number or string
   foodKind?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | 'RECIPE';
   description?: string;
+  weight?: number | string; // Long -> number or string (그램 수)
 }
 
 /**
@@ -72,25 +78,54 @@ export interface MessageResponse {
  * 
  * 이 함수는 requestWithWebViewFallback을 사용하여
  * RN에서 직접 호출 시 HTML 로그인 페이지가 오면 WebView를 통해 다시 시도합니다.
+ * 
+ * 백엔드 주의사항:
+ * - 데이터가 없으면 IllegalArgumentException("FOOD_NOT_FOUND")를 던져서 500 에러 발생
+ * - 이 경우 빈 배열로 처리하여 앱이 정상 작동하도록 함
  */
 export async function getTodayFoods(): Promise<FoodResponse[]> {
   try {
     const result = await requestWithWebViewFallback<FoodResponse[]>('GET', '/api/food/today');
     // 배열이 아니면 빈 배열 반환
-    return Array.isArray(result) ? result : [];
+    if (Array.isArray(result)) {
+      if (result.length > 0) {
+        console.log('[Food API] 일일 식단 조회 성공:', result.length, '개');
+      }
+      return result;
+    }
+    console.warn('[Food API] 일일 식단 조회: 배열이 아닌 응답:', typeof result);
+    return [];
   } catch (error: any) {
     const message = String(error?.message || '');
-    // 500, 404, FOOD_NOT_FOUND 등의 에러는 빈 배열 반환
+    const errorStr = String(error || '');
+    
+    // 백엔드에서 데이터가 없을 때 IllegalArgumentException("FOOD_NOT_FOUND")를 던져서 500 에러 발생
+    // 500, 404, FOOD_NOT_FOUND, IllegalArgumentException 등의 에러는 빈 배열 반환
     if (
       message.includes('500') ||
       message.includes('404') ||
       message.includes('FOOD_NOT_FOUND') ||
+      message.includes('IllegalArgumentException') ||
       message.includes('Internal Server Error') ||
-      message.includes('사용자를 찾을 수 없습니다')
+      message.includes('사용자를 찾을 수 없습니다') ||
+      errorStr.includes('FOOD_NOT_FOUND') ||
+      errorStr.includes('IllegalArgumentException')
     ) {
-      console.log('[Food API] 일일 식단 조회 API 에러, 빈 배열 반환:', message);
+      // 데이터가 없는 것은 정상적인 상황이므로 로그 레벨을 낮춤
+      if (message.includes('FOOD_NOT_FOUND') || errorStr.includes('FOOD_NOT_FOUND')) {
+        console.log('[Food API] 일일 식단 조회: 데이터 없음 (정상), 빈 배열 반환');
+      } else {
+        console.log('[Food API] 일일 식단 조회 API 에러, 빈 배열 반환:', message.substring(0, 100));
+      }
       return [];
     }
+    
+    // 기타 에러는 상세 로깅 후 throw
+    console.error('[Food API] 일일 식단 조회 실패 (알 수 없는 에러):', {
+      message,
+      error: errorStr.substring(0, 200),
+      type: error?.constructor?.name,
+    });
     throw error;
   }
 }
@@ -102,32 +137,62 @@ export async function getTodayFoods(): Promise<FoodResponse[]> {
  * Swagger 명세:
  * - operationId: getByWeekly
  * - response: ApiListFoodResponse (value는 FoodResponse[])
+ * 
+ * 백엔드 주의사항:
+ * - 데이터가 없으면 IllegalArgumentException("FOOD_NOT_FOUND")를 던져서 500 에러 발생
+ * - 이 경우 빈 배열로 처리하여 앱이 정상 작동하도록 함
+ * - 백엔드의 getByStatusAndWeekly에서 start가 아닌 today를 사용하여 월요일 이전 데이터 미조회 가능
  */
 export async function getWeeklyFoods(): Promise<FoodResponse[]> {
   try {
     const result = await requestWithWebViewFallback<FoodResponse[]>('GET', '/api/food/weekly');
     // 배열이 아니면 빈 배열 반환
-    return Array.isArray(result) ? result : [];
+    if (Array.isArray(result)) {
+      if (result.length > 0) {
+        console.log('[Food API] 주간 식단 조회 성공:', result.length, '개');
+      }
+      return result;
+    }
+    console.warn('[Food API] 주간 식단 조회: 배열이 아닌 응답:', typeof result);
+    return [];
   } catch (error: any) {
     const message = String(error?.message || '');
-    // 500, 404, FOOD_NOT_FOUND 등의 에러는 빈 배열 반환
+    const errorStr = String(error || '');
+    
+    // 백엔드에서 데이터가 없을 때 IllegalArgumentException("FOOD_NOT_FOUND")를 던져서 500 에러 발생
+    // 500, 404, FOOD_NOT_FOUND, IllegalArgumentException 등의 에러는 빈 배열 반환
     if (
       message.includes('500') ||
       message.includes('404') ||
       message.includes('FOOD_NOT_FOUND') ||
+      message.includes('IllegalArgumentException') ||
       message.includes('Internal Server Error') ||
-      message.includes('사용자를 찾을 수 없습니다')
+      message.includes('사용자를 찾을 수 없습니다') ||
+      errorStr.includes('FOOD_NOT_FOUND') ||
+      errorStr.includes('IllegalArgumentException')
     ) {
-      console.log('[Food API] 주간 식단 조회 API 에러, 빈 배열 반환:', message);
+      // 데이터가 없는 것은 정상적인 상황이므로 로그 레벨을 낮춤
+      if (message.includes('FOOD_NOT_FOUND') || errorStr.includes('FOOD_NOT_FOUND')) {
+        console.log('[Food API] 주간 식단 조회: 데이터 없음 (정상), 빈 배열 반환');
+      } else {
+        console.log('[Food API] 주간 식단 조회 API 에러, 빈 배열 반환:', message.substring(0, 100));
+      }
       return [];
     }
+    
+    // 기타 에러는 상세 로깅 후 throw
+    console.error('[Food API] 주간 식단 조회 실패 (알 수 없는 에러):', {
+      message,
+      error: errorStr.substring(0, 200),
+      type: error?.constructor?.name,
+    });
     throw error;
   }
 }
 
 /**
  * 하루 음식 추천
- * GET /api/food/recommend
+ * POST /api/food/recommend
  * 
  * Swagger 명세:
  * - operationId: recommendFood_1
@@ -135,7 +200,7 @@ export async function getWeeklyFoods(): Promise<FoodResponse[]> {
  */
 export async function getFoodRecommendations(): Promise<FoodRecommendation[]> {
   try {
-    const result = await requestWithWebViewFallback<FoodRecommendation[]>('GET', '/api/food/recommend');
+    const result = await requestWithWebViewFallback<FoodRecommendation[]>('POST', '/api/food/recommend');
     // 배열이 아니면 빈 배열 반환
     return Array.isArray(result) ? result : [];
   } catch (error: any) {
@@ -236,22 +301,17 @@ export async function searchFoodByKeyword(keyword: string): Promise<FoodResponse
 
 /**
  * 레시피 추천
- * GET /api/food/recipe/recommend
+ * POST /api/food/recipe/recommend
  * 
  * 백엔드 응답: Api<FoodRecommendation>
  * - value: FoodRecommendation { name, calory(BigDecimal), carbohydrate(BigDecimal), protein(BigDecimal), fat(BigDecimal), foodKind, description, weight(Long) }
- * 
- * 주의: 백엔드가 @GetMapping에 @RequestBody를 사용하는 비표준 API입니다.
- * Spring Boot는 GET 요청의 body를 읽지 못하므로 이 API는 정상 작동하지 않습니다.
- * fallback 데이터를 사용합니다.
  */
 export async function recommendRecipe(request: RecipeRequest): Promise<FoodRecommendation | null> {
   console.log('[Food API] 레시피 추천 요청:', request.userInput?.substring(0, 50));
   
   try {
-    // 백엔드가 GET + @RequestBody를 사용하지만 Spring Boot에서는 작동하지 않음
-    // WebView를 통한 GET + body 시도
-    const response = await requestWithWebViewFallback<FoodRecommendation>('GET', '/api/food/recipe/recommend', {
+    // POST 요청으로 body 전송
+    const response = await requestWithWebViewFallback<FoodRecommendation>('POST', '/api/food/recipe/recommend', {
       body: request,
     });
     

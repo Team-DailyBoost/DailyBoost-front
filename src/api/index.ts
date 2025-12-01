@@ -14,3 +14,4 @@ export * from './exercises';
 export * from './gemini';
 export * from './images';
 export * from './email';
+export * from './challenges';
