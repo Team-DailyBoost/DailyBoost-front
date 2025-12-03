@@ -2088,8 +2088,8 @@ export function Community() {
           }
         }
         
-        // 좋아요 후 댓글 목록 새로고침하여 서버 상태 반영
-        if (selectedPost) {
+        // 대회 게시글이 아닌 경우에만 댓글 목록 새로고침 (대회는 투표 상태 유지를 위해 리로드하지 않음)
+        if (selectedPost && !isCompetitionPost(selectedPost)) {
           setTimeout(async () => {
             await loadComments(selectedPost.id);
           }, 300);
@@ -2098,8 +2098,8 @@ export function Community() {
     } catch (apiError) {
       // API 실패 시 로컬 상태는 이미 업데이트되었으므로 에러만 로깅
       console.log('[Community] 댓글 좋아요 API 실패:', apiError);
-      // API 실패 시에도 댓글 목록 새로고침 시도
-      if (selectedPost) {
+      // 대회 게시글이 아닌 경우에만 댓글 목록 새로고침 (대회는 투표 상태 유지를 위해 리로드하지 않음)
+      if (selectedPost && !isCompetitionPost(selectedPost)) {
         setTimeout(async () => {
           await loadComments(selectedPost.id);
         }, 300);
