@@ -62,7 +62,141 @@ const TIER_NAMES = {
   diamond: '다이아',
 };
 
-// 챌린지 더미 데이터 제거됨
+// 챌린지 더미 데이터
+const DUMMY_CHALLENGES: ChallengeResponse[] = [
+  {
+    id: 1,
+    title: '30일 플랭크 챌린지',
+    description: '매일 플랭크로 코어 근력을 강화하세요! 하루 1분씩 30일간 지속하면 완주입니다.',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 1250,
+  },
+  {
+    id: 2,
+    title: '주 5회 운동 챌린지',
+    description: '일주일에 5일 이상 운동하는 습관을 만들어보세요. 건강한 라이프스타일의 시작입니다!',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 3420,
+  },
+  {
+    id: 3,
+    title: '100km 러닝 챌린지',
+    description: '한 달 동안 100km를 달성하세요! 유산소 운동으로 체력을 기르고 건강을 관리해보세요.',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 890,
+  },
+  {
+    id: 4,
+    title: '상체 근력 챌린지',
+    description: '푸시업, 풀업 등으로 상체 근력을 키워보세요. 4주 동안 꾸준히 운동하면 변화를 느낄 수 있습니다.',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 28 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 2100,
+  },
+  {
+    id: 5,
+    title: '하체 강화 챌린지',
+    description: '스쿼트, 런지로 하체 근력을 강화하세요. 매일 50회씩 도전해보세요!',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 21 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 1560,
+  },
+  {
+    id: 6,
+    title: '요가 & 스트레칭 챌린지',
+    description: '매일 15분씩 요가와 스트레칭으로 유연성을 기르고 몸의 긴장을 풀어보세요.',
+    status: 'REGISTERED',
+    startDate: new Date().toISOString(),
+    endDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+    participantCount: 980,
+  },
+];
+
+// 운동시간랭킹 더미 데이터
+const DUMMY_RANKING: Array<{ userId: string; userName: string; totalMinutes: number }> = [
+  { userId: 'user1', userName: '김철수', totalMinutes: 420 },
+  { userId: 'user2', userName: '이영희', totalMinutes: 380 },
+  { userId: 'user3', userName: '박민수', totalMinutes: 350 },
+  { userId: 'user4', userName: '최지은', totalMinutes: 320 },
+  { userId: 'user5', userName: '정대현', totalMinutes: 290 },
+  { userId: 'user6', userName: '한소영', totalMinutes: 270 },
+  { userId: 'user7', userName: '강태영', totalMinutes: 250 },
+  { userId: 'user8', userName: '윤서연', totalMinutes: 230 },
+  { userId: 'user9', userName: '임동현', totalMinutes: 210 },
+  { userId: 'user10', userName: '오수진', totalMinutes: 190 },
+];
+
+// 등급별 랭킹 더미 데이터
+const DUMMY_TIER_RANKING: Record<'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond', Array<{ userId: string; userName: string; exp: number; tier: string }>> = {
+  bronze: [
+    { userId: 'bronze1', userName: '김민준', exp: 850, tier: 'bronze' },
+    { userId: 'bronze2', userName: '이서연', exp: 720, tier: 'bronze' },
+    { userId: 'bronze3', userName: '박지훈', exp: 680, tier: 'bronze' },
+    { userId: 'bronze4', userName: '최수진', exp: 550, tier: 'bronze' },
+    { userId: 'bronze5', userName: '정현우', exp: 480, tier: 'bronze' },
+    { userId: 'bronze6', userName: '한예은', exp: 420, tier: 'bronze' },
+    { userId: 'bronze7', userName: '강도현', exp: 380, tier: 'bronze' },
+    { userId: 'bronze8', userName: '윤채원', exp: 320, tier: 'bronze' },
+    { userId: 'bronze9', userName: '임준서', exp: 250, tier: 'bronze' },
+    { userId: 'bronze10', userName: '오하늘', exp: 180, tier: 'bronze' },
+  ],
+  silver: [
+    { userId: 'silver1', userName: '김다은', exp: 2850, tier: 'silver' },
+    { userId: 'silver2', userName: '이준호', exp: 2620, tier: 'silver' },
+    { userId: 'silver3', userName: '박서윤', exp: 2450, tier: 'silver' },
+    { userId: 'silver4', userName: '최민재', exp: 2280, tier: 'silver' },
+    { userId: 'silver5', userName: '정소율', exp: 2100, tier: 'silver' },
+    { userId: 'silver6', userName: '한지원', exp: 1950, tier: 'silver' },
+    { userId: 'silver7', userName: '강현수', exp: 1780, tier: 'silver' },
+    { userId: 'silver8', userName: '윤지안', exp: 1620, tier: 'silver' },
+    { userId: 'silver9', userName: '임태현', exp: 1450, tier: 'silver' },
+    { userId: 'silver10', userName: '오나연', exp: 1280, tier: 'silver' },
+  ],
+  gold: [
+    { userId: 'gold1', userName: '김하늘', exp: 5850, tier: 'gold' },
+    { userId: 'gold2', userName: '이민규', exp: 5420, tier: 'gold' },
+    { userId: 'gold3', userName: '박서아', exp: 5150, tier: 'gold' },
+    { userId: 'gold4', userName: '최건우', exp: 4880, tier: 'gold' },
+    { userId: 'gold5', userName: '정유진', exp: 4600, tier: 'gold' },
+    { userId: 'gold6', userName: '한시우', exp: 4350, tier: 'gold' },
+    { userId: 'gold7', userName: '강민지', exp: 4080, tier: 'gold' },
+    { userId: 'gold8', userName: '윤도윤', exp: 3820, tier: 'gold' },
+    { userId: 'gold9', userName: '임채린', exp: 3550, tier: 'gold' },
+    { userId: 'gold10', userName: '오준혁', exp: 3280, tier: 'gold' },
+  ],
+  platinum: [
+    { userId: 'platinum1', userName: '김수아', exp: 8850, tier: 'platinum' },
+    { userId: 'platinum2', userName: '이동욱', exp: 8420, tier: 'platinum' },
+    { userId: 'platinum3', userName: '박나은', exp: 8150, tier: 'platinum' },
+    { userId: 'platinum4', userName: '최민석', exp: 7880, tier: 'platinum' },
+    { userId: 'platinum5', userName: '정하린', exp: 7600, tier: 'platinum' },
+    { userId: 'platinum6', userName: '한시온', exp: 7350, tier: 'platinum' },
+    { userId: 'platinum7', userName: '강지우', exp: 7080, tier: 'platinum' },
+    { userId: 'platinum8', userName: '윤태민', exp: 6820, tier: 'platinum' },
+    { userId: 'platinum9', userName: '임서하', exp: 6550, tier: 'platinum' },
+    { userId: 'platinum10', userName: '오준영', exp: 6280, tier: 'platinum' },
+  ],
+  diamond: [
+    { userId: 'diamond1', userName: '김지율', exp: 12850, tier: 'diamond' },
+    { userId: 'diamond2', userName: '이현준', exp: 12420, tier: 'diamond' },
+    { userId: 'diamond3', userName: '박서연', exp: 12150, tier: 'diamond' },
+    { userId: 'diamond4', userName: '최민호', exp: 11880, tier: 'diamond' },
+    { userId: 'diamond5', userName: '정다인', exp: 11600, tier: 'diamond' },
+    { userId: 'diamond6', userName: '한시윤', exp: 11350, tier: 'diamond' },
+    { userId: 'diamond7', userName: '강지안', exp: 11080, tier: 'diamond' },
+    { userId: 'diamond8', userName: '윤태현', exp: 10820, tier: 'diamond' },
+    { userId: 'diamond9', userName: '임서윤', exp: 10550, tier: 'diamond' },
+    { userId: 'diamond10', userName: '오준서', exp: 10280, tier: 'diamond' },
+  ],
+};
 
 export function Challenge() {
   const [activeTab, setActiveTab] = useState<'weekly' | 'tier' | 'challenges'>('weekly');
@@ -91,16 +225,98 @@ export function Challenge() {
 
   const currentUser = { email: 'user@example.com', name: '사용자' };
   const userId = currentUser.email;
+  const [workoutTimeRanking, setWorkoutTimeRanking] = useState<Array<{ userId: string; userName: string; totalMinutes: number }>>([]);
 
   useEffect(() => {
     loadUserProgress();
     loadChallenges();
+    loadWorkoutTimeRanking();
   }, []);
 
-  // 화면이 포커스될 때마다 챌린지 목록 새로고침
+  // 운동 시간 랭킹 로드 (로컬 저장소에서)
+  const loadWorkoutTimeRanking = async () => {
+    try {
+      // 모든 사용자의 운동 기록 가져오기 (로컬 저장소)
+      const allWorkoutEntries = await AsyncStorage.getItem('@workoutLogger:localEntries');
+      
+      if (!allWorkoutEntries) {
+        // 데이터가 없으면 더미 데이터 사용
+        console.log('[Challenge] 운동 기록이 없어 더미 랭킹 데이터 사용');
+        setWorkoutTimeRanking(DUMMY_RANKING);
+        return;
+      }
+
+      const entries = JSON.parse(allWorkoutEntries);
+      
+      // 이번 주 데이터만 필터링
+      const now = new Date();
+      const currentWeekMonday = new Date(now);
+      const day = currentWeekMonday.getDay();
+      const diff = (day === 0 ? -6 : 1) - day;
+      currentWeekMonday.setDate(currentWeekMonday.getDate() + diff);
+      currentWeekMonday.setHours(0, 0, 0, 0);
+
+      // 사용자별 주간 운동 시간 계산
+      const userTimeMap = new Map<string, { userName: string; totalMinutes: number }>();
+
+      entries.forEach((entry: any) => {
+        if (!entry.date) return;
+        
+        const entryDate = new Date(entry.date);
+        if (entryDate >= currentWeekMonday) {
+          const userId = entry.userId || 'unknown';
+          const userName = entry.userName || '사용자';
+          
+          // 운동 시간 계산 (duration이 있으면 사용, 없으면 sets * 3분으로 추정)
+          let minutes = 0;
+          if (entry.duration) {
+            minutes = entry.duration; // duration이 분 단위로 저장되어 있다고 가정
+          } else if (entry.exercise?.isCardio && entry.duration) {
+            minutes = entry.duration;
+          } else if (entry.sets) {
+            minutes = entry.sets * 3; // 세트당 3분으로 추정
+          }
+
+          if (userTimeMap.has(userId)) {
+            const existing = userTimeMap.get(userId)!;
+            existing.totalMinutes += minutes;
+          } else {
+            userTimeMap.set(userId, { userName, totalMinutes: minutes });
+          }
+        }
+      });
+
+      // 랭킹 정렬 (운동 시간 내림차순)
+      const ranking = Array.from(userTimeMap.values())
+        .sort((a, b) => b.totalMinutes - a.totalMinutes)
+        .slice(0, 10); // 상위 10명만 표시
+
+      // 랭킹 데이터가 없거나 부족하면 더미 데이터와 병합
+      if (ranking.length === 0) {
+        console.log('[Challenge] 이번 주 운동 기록이 없어 더미 랭킹 데이터 사용');
+        setWorkoutTimeRanking(DUMMY_RANKING);
+      } else if (ranking.length < 5) {
+        // 데이터가 부족하면 더미 데이터와 병합
+        const merged = [...ranking, ...DUMMY_RANKING.slice(0, 10 - ranking.length)]
+          .sort((a, b) => b.totalMinutes - a.totalMinutes)
+          .slice(0, 10);
+        setWorkoutTimeRanking(merged);
+      } else {
+        setWorkoutTimeRanking(ranking);
+      }
+    } catch (error) {
+      console.error('[Challenge] 운동 시간 랭킹 로드 실패, 더미 데이터 사용:', error);
+      // 에러 발생 시 더미 데이터 사용
+      setWorkoutTimeRanking(DUMMY_RANKING);
+    }
+  };
+
+
+  // 화면이 포커스될 때마다 챌린지 목록 새로고침 및 운동 시간 랭킹 새로고침
   useFocusEffect(
     React.useCallback(() => {
       loadChallenges();
+      loadWorkoutTimeRanking();
     }, [])
   );
 
@@ -133,8 +349,22 @@ export function Challenge() {
     setLoadingChallenges(true);
     try {
       console.log('[Challenge] 백엔드 챌린지 목록 로드 시작, userId:', userId);
-      const backendChallenges = await getChallenges();
-      console.log('[Challenge] 백엔드 챌린지 목록 응답:', backendChallenges);
+      let backendChallenges: ChallengeResponse[] = [];
+      
+      try {
+        backendChallenges = await getChallenges();
+        console.log('[Challenge] 백엔드 챌린지 목록 응답:', backendChallenges);
+      } catch (apiError: any) {
+        console.warn('[Challenge] 백엔드 API 실패, 더미 데이터 사용:', apiError?.message || apiError);
+        // API 실패 시 더미 데이터 사용
+        backendChallenges = DUMMY_CHALLENGES;
+      }
+      
+      // 백엔드 응답이 비어있으면 더미 데이터 사용
+      if (!backendChallenges || backendChallenges.length === 0) {
+        console.log('[Challenge] 백엔드 응답이 비어있어 더미 데이터 사용');
+        backendChallenges = DUMMY_CHALLENGES;
+      }
       
       // 참가한 챌린지 ID 목록 가져오기 (로컬 저장소에서)
       const joinedChallenges = await getJoinedChallengeIdsAsync();
@@ -162,7 +392,7 @@ export function Challenge() {
       });
       
       setChallenges(convertedChallenges);
-      console.log('[Challenge] 백엔드 챌린지 변환 완료:', convertedChallenges.length, '개');
+      console.log('[Challenge] 챌린지 변환 완료:', convertedChallenges.length, '개');
       console.log('[Challenge] 변환된 챌린지 상세:', convertedChallenges.map(c => ({
         id: c.id,
         title: c.title,
@@ -171,14 +401,37 @@ export function Challenge() {
         endDate: c.endDate
       })));
     } catch (error: any) {
-      console.error('[Challenge] 백엔드 챌린지 로드 실패:', error?.message || error);
+      console.error('[Challenge] 챌린지 로드 실패:', error?.message || error);
+      
+      // 최종 실패 시에도 더미 데이터 사용
+      try {
+        const joinedChallenges = await getJoinedChallengeIdsAsync();
+        const convertedChallenges: Challenge[] = DUMMY_CHALLENGES.map(challenge => {
+          const startDate = challenge.startDate ? new Date(challenge.startDate) : new Date();
+          const endDate = challenge.endDate ? new Date(challenge.endDate) : new Date();
+          const durationMs = endDate.getTime() - startDate.getTime();
+          const durationDays = Math.ceil(durationMs / (1000 * 60 * 60 * 24));
+          const isJoined = joinedChallenges.has(challenge.id);
+          
+          return {
+            ...challenge,
+            duration: `${durationDays}일`,
+            progress: 0,
+            isJoined,
+            reward: '🏅 챌린지 완주 배지',
+            exp: 100,
+          };
+        });
+        setChallenges(convertedChallenges);
+        console.log('[Challenge] 더미 데이터로 챌린지 로드 완료');
+      } catch (fallbackError) {
+        console.error('[Challenge] 더미 데이터 로드도 실패:', fallbackError);
+      }
       
       // 네트워크 오류가 아닌 경우에만 알림 표시
       if (error?.message && !error.message.includes('Network')) {
-        Alert.alert('알림', '챌린지 목록을 불러오는데 실패했습니다.');
+        Alert.alert('알림', '챌린지 목록을 불러오는데 실패했습니다. 더미 데이터를 표시합니다.');
       }
-      
-      // 에러 발생 시 빈 배열 유지 (기존 챌린지는 유지)
     } finally {
       setLoadingChallenges(false);
     }
@@ -512,8 +765,36 @@ export function Challenge() {
         {activeTab === 'weekly' && (
           <View>
             <Card style={styles.card}>
-              <Text style={styles.cardTitle}>운동 시간 랭킹</Text>
-              <Text style={styles.emptyText}>랭킹 데이터가 없습니다</Text>
+              <Text style={styles.cardTitle}>이번 주 운동 시간 랭킹</Text>
+              {workoutTimeRanking.length === 0 ? (
+                <Text style={styles.emptyText}>랭킹 데이터가 없습니다</Text>
+              ) : (
+                <View style={styles.rankingContainer}>
+                  {workoutTimeRanking.map((user, index) => (
+                    <View key={`${user.userId || 'unknown'}-${index}`} style={styles.rankingItem}>
+                      <View style={styles.rankingLeft}>
+                        <View style={[
+                          styles.rankingBadge,
+                          index === 0 && styles.rankingBadgeGold,
+                          index === 1 && styles.rankingBadgeSilver,
+                          index === 2 && styles.rankingBadgeBronze,
+                        ]}>
+                          <Text style={[
+                            styles.rankingNumber,
+                            index < 3 && styles.rankingNumberTop
+                          ]}>
+                            {index + 1}
+                          </Text>
+                        </View>
+                        <Text style={styles.rankingName}>{user.userName}</Text>
+                      </View>
+                      <Text style={styles.rankingTime}>
+                        {Math.floor(user.totalMinutes / 60)}시간 {user.totalMinutes % 60}분
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </Card>
           </View>
         )}
@@ -539,7 +820,35 @@ export function Challenge() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={styles.emptyText}>랭킹 데이터가 없습니다</Text>
+              {DUMMY_TIER_RANKING[tierTab].length === 0 ? (
+                <Text style={styles.emptyText}>랭킹 데이터가 없습니다</Text>
+              ) : (
+                <View style={styles.rankingContainer}>
+                  {DUMMY_TIER_RANKING[tierTab].map((user, index) => (
+                    <View key={`${user.userId}-${index}`} style={styles.rankingItem}>
+                      <View style={styles.rankingLeft}>
+                        <View style={[
+                          styles.rankingBadge,
+                          index === 0 && styles.rankingBadgeGold,
+                          index === 1 && styles.rankingBadgeSilver,
+                          index === 2 && styles.rankingBadgeBronze,
+                        ]}>
+                          <Text style={[
+                            styles.rankingNumber,
+                            index < 3 && styles.rankingNumberTop
+                          ]}>
+                            {index + 1}
+                          </Text>
+                        </View>
+                        <Text style={styles.rankingName}>{user.userName}</Text>
+                      </View>
+                      <Text style={styles.rankingTime}>
+                        {user.exp.toLocaleString()} EXP
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </Card>
           </View>
         )}
@@ -1370,6 +1679,67 @@ const styles = StyleSheet.create({
   rankScore: {
     fontSize: 14,
     color: '#666',
+  },
+  rankingContainer: {
+    marginTop: 16,
+  },
+  rankingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  rankingLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  rankingBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#e2e8f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  rankingBadgeGold: {
+    backgroundColor: '#fbbf24',
+  },
+  rankingBadgeSilver: {
+    backgroundColor: '#94a3b8',
+  },
+  rankingBadgeBronze: {
+    backgroundColor: '#f97316',
+  },
+  rankingNumber: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  rankingNumberTop: {
+    color: '#ffffff',
+  },
+  rankingName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#0f172a',
+    flex: 1,
+  },
+  rankingTime: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#6366f1',
   },
   tierTabs: {
     flexDirection: 'row',

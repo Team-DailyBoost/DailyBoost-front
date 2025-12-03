@@ -80,7 +80,7 @@ export function WorkoutLogger() {
   const [todaysWorkouts, setTodaysWorkouts] = useState<WorkoutEntry[]>([]);
   const [selectedBodyPart, setSelectedBodyPart] = useState<string>('');
   const [recommendationSeed, setRecommendationSeed] = useState(Date.now());
-  const [workoutTime, setWorkoutTime] = useState<number>(30);
+  const [workoutTime] = useState<number>(30); // 고정값 30분 (UI에서 숨김)
   
   // 중복 호출 방지 플래그
   const requestingRecommendationsRef = useRef(false);
@@ -797,7 +797,7 @@ const getPartLabel = (exercise: Exercise) =>
     const suggestedSets = condition === 'tired' ? 2 : condition === 'normal' ? 3 : 4;
     const suggestedReps = exercise.difficulty === 'beginner' ? 12 : exercise.difficulty === 'intermediate' ? 10 : 8;
 
-    const newWorkout: WorkoutEntry = {
+    const newWorkout: WorkoutEntry & { userId?: string; userName?: string } = {
       id: Date.now().toString(),
       exercise,
       sets: suggestedSets,
@@ -808,6 +808,8 @@ const getPartLabel = (exercise: Exercise) =>
       time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
       date: new Date().toISOString().split('T')[0], // YYYY-MM-DD 형식으로 날짜 저장
       source: 'local',
+      userId: userId,
+      userName: currentUser?.nickname || currentUser?.name || '사용자',
     };
     setTodaysWorkouts(prev => {
       const updated = [...prev, newWorkout];
@@ -996,21 +998,6 @@ const getPartLabel = (exercise: Exercise) =>
             <Card style={styles.card}>
               <Text style={styles.cardTitle}>운동 설정</Text>
               
-              <Text style={styles.label}>운동 시간 (분)</Text>
-              <View style={styles.timeButtons}>
-                {[15, 30, 45, 60].map(time => (
-                  <TouchableOpacity
-                    key={time}
-                    style={[styles.timeButton, workoutTime === time && styles.timeButtonActive]}
-                    onPress={() => setWorkoutTime(time)}
-                  >
-                    <Text style={[styles.timeButtonText, workoutTime === time && styles.timeButtonTextActive]}>
-                      {time}분
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               <Text style={styles.label}>오늘 컨디션</Text>
               <View style={styles.conditionButtons}>
                 {[

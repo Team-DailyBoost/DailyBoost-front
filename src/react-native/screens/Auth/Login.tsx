@@ -99,6 +99,8 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   const currentProviderRef = useRef<'kakao' | 'naver' | null>(null);
   const handledAuthRef = useRef(false);
   const postMessageTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const healthModalShownRef = useRef(false);
+  const webViewLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -152,40 +154,64 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
         console.log('[Login] 헬스 정보 플래그 확인:', keyToCheck);
       const initialized = await AsyncStorage.getItem(keyToCheck);
         console.log('[Login] 헬스 정보 초기화 여부:', initialized);
+      
+      // 플래그가 있더라도 실제 헬스 정보 데이터가 완전한지 확인
+      let hasCompleteHealthInfo = false;
       if (initialized === '1') {
-          console.log('[Login] 헬스 정보 이미 초기화됨');
+          console.log('[Login] 헬스 정보 플래그 존재, 실제 데이터 확인 중...');
           
-          // 헬스 정보 플래그가 있지만 currentUser에 헬스 정보가 없을 수 있음
-          // 이 경우 백엔드에서 가져오거나, 사용자에게 프로필 수정을 안내해야 함
           try {
             const currentUserRaw = await AsyncStorage.getItem('currentUser');
             if (currentUserRaw) {
               const currentUser = JSON.parse(currentUserRaw);
-              const hasHealthInfo = !!(currentUser?.age || currentUser?.gender || currentUser?.healthInfo);
+              
+              // 헬스 정보가 완전한지 확인 (age, gender, height, weight, goal 모두 필요)
+              const hasAge = !!currentUser?.age && Number(currentUser.age) > 0;
+              const hasGender = !!currentUser?.gender;
+              const healthInfo = currentUser?.healthInfo;
+              const hasHeight = !!(healthInfo?.height && Number(healthInfo.height) > 0);
+              const hasWeight = !!(healthInfo?.weight && Number(healthInfo.weight) > 0);
+              const hasGoal = !!healthInfo?.goal;
+              
+              hasCompleteHealthInfo = hasAge && hasGender && hasHeight && hasWeight && hasGoal;
+              
               console.log('[Login] currentUser 헬스 정보 확인:', {
-                hasAge: !!currentUser?.age,
-                hasGender: !!currentUser?.gender,
-                hasHealthInfo: !!currentUser?.healthInfo,
-                hasAnyHealthInfo: hasHealthInfo,
+                hasAge,
+                hasGender,
+                hasHeight,
+                hasWeight,
+                hasGoal,
+                hasCompleteHealthInfo,
               });
               
-              if (!hasHealthInfo) {
-                console.warn('[Login] 헬스 정보 플래그는 있지만 currentUser에 헬스 정보가 없음 - 백엔드에서 가져올 수 없으므로 사용자에게 프로필 수정을 안내해야 함');
-                // TODO: 백엔드에서 현재 로그인한 사용자의 전체 프로필을 가져오는 API가 추가되면 여기서 호출
+              if (!hasCompleteHealthInfo) {
+                console.warn('[Login] 헬스 정보가 불완전함 - 헬스 정보 입력 모달 표시');
               }
+            } else {
+              console.warn('[Login] currentUser가 없음 - 헬스 정보 입력 모달 표시');
             }
           } catch (e) {
             console.warn('[Login] currentUser 헬스 정보 확인 실패:', e);
           }
-          
-          console.log('[Login] onLoggedIn 호출');
-        console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
-        onLoggedIn();
-        console.log('[Login] onLoggedIn 호출 완료');
+      }
+      
+      // 플래그가 없거나 헬스 정보가 불완전하면 모달 표시
+      if (initialized !== '1' || !hasCompleteHealthInfo) {
+        console.log('[Login] 헬스 정보 미초기화 또는 불완전, 모달 표시');
+        healthModalShownRef.current = true;
+        setShowHealthModal(true);
         return;
       }
-        console.log('[Login] 헬스 정보 미초기화, 모달 표시');
-      setShowHealthModal(true);
+      
+      // 헬스 정보가 완전하면 모달 표시 플래그 리셋
+      healthModalShownRef.current = false;
+      
+      // 헬스 정보가 완전하면 로그인 진행
+      console.log('[Login] 헬스 정보 완전, 로그인 진행');
+      console.log('[Login] onLoggedIn 호출');
+      console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
+      onLoggedIn();
+      console.log('[Login] onLoggedIn 호출 완료');
     } catch (error) {
         console.error('[Login] 헬스 정보 초기화 여부 확인 실패:', error);
         // 에러 발생 시에도 로그인 완료 처리
@@ -301,21 +327,17 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
           }
         })();
 
-        // 로그인 완료 먼저 처리 (헬스 정보는 나중에)
-        console.log('[Login] 로그인 완료, onLoggedIn 호출');
-        onLoggedIn();
-        console.log('[Login] onLoggedIn 호출 완료');
-        
-        // 헬스 정보 플로우는 비동기로 처리 (로그인 완료 후)
-        setTimeout(async () => {
-          try {
-            console.log('[Login] 헬스 정보 플로우 시작');
-            await ensureHealthInfoFlow(healthKey);
-          } catch (healthError) {
-            console.error('[Login] 헬스 정보 플로우 실패:', healthError);
-            // 헬스 정보 실패해도 이미 로그인은 완료됨
-          }
-        }, 100);
+        // 헬스 정보 확인 먼저 처리 (헬스 정보가 없으면 로그인 완료하지 않음)
+        console.log('[Login] 헬스 정보 확인 시작');
+        try {
+          await ensureHealthInfoFlow(healthKey);
+          // 헬스 정보가 완전하면 ensureHealthInfoFlow 내부에서 onLoggedIn() 호출됨
+          // 헬스 정보가 없으면 모달이 표시되고 여기서는 onLoggedIn() 호출하지 않음
+        } catch (healthError) {
+          console.error('[Login] 헬스 정보 플로우 실패:', healthError);
+          // 에러 발생 시에도 로그인은 진행 (기존 동작 유지)
+          onLoggedIn();
+        }
         
         // 식단 추천은 백그라운드에서 계속 진행
         foodPromise.catch(() => {});
@@ -348,6 +370,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       clearTimeout(postMessageTimeoutRef.current);
       postMessageTimeoutRef.current = null;
     }
+    if (webViewLoadTimeoutRef.current) {
+      clearTimeout(webViewLoadTimeoutRef.current);
+      webViewLoadTimeoutRef.current = null;
+    }
     
     setCurrentProvider(provider);
     currentProviderRef.current = provider;
@@ -355,6 +381,48 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
     setWebViewUrl(`${API_CONFIG.BASE_URL}/oauth2/authorization/${provider}`);
     setShowWebView(true);
     setWebViewLoading(true);
+    
+    // 30초 타임아웃 설정
+    webViewLoadTimeoutRef.current = setTimeout(() => {
+      if (!handledAuthRef.current) {
+        console.warn('[Login] WebView 로딩 타임아웃');
+        setWebViewLoading(false);
+        setLoading(false);
+        Alert.alert(
+          '타임아웃',
+          '페이지 로딩 시간이 초과되었습니다. 네트워크 연결을 확인하고 다시 시도해주세요.',
+          [
+            {
+              text: '다시 시도',
+              onPress: () => {
+                if (webViewRef.current && webViewUrl) {
+                  setWebViewLoading(true);
+                  setLoading(true);
+                  webViewRef.current.reload();
+                  // 타임아웃 재설정
+                  webViewLoadTimeoutRef.current = setTimeout(() => {
+                    if (!handledAuthRef.current) {
+                      setWebViewLoading(false);
+                      setLoading(false);
+                      Alert.alert('타임아웃', '페이지 로딩 시간이 초과되었습니다.');
+                    }
+                  }, 30000);
+                }
+              },
+            },
+            {
+              text: '닫기',
+              style: 'cancel',
+              onPress: () => {
+                setShowWebView(false);
+                setCurrentProvider(null);
+                handledAuthRef.current = false;
+              },
+            },
+          ]
+        );
+      }
+    }, 30000);
   };
 
   const handleWebViewMessage = useCallback(
@@ -549,6 +617,7 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       }
 
       await AsyncStorage.setItem(healthFlagKey, '1');
+      healthModalShownRef.current = false;
       setShowHealthModal(false);
       setSubmittingHealth(false);
       console.log('[Login] 헬스 정보 제출 완료, onLoggedIn 호출');
@@ -664,12 +733,14 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
       await AsyncStorage.removeItem('refreshToken');
       await AsyncStorage.removeItem('@sessionCookie');
       await AsyncStorage.removeItem('backend:session-cookie');
-      await AsyncStorage.setItem(makeHealthFlagKey(email), '1');
       
-      console.log('[Login] 로컬 로그인 완료');
-      console.log('[Login] onLoggedIn 함수 존재:', typeof onLoggedIn);
-      onLoggedIn();
-      console.log('[Login] onLoggedIn 호출 완료 (로컬 로그인)');
+      // 헬스 정보 플래그 키 설정
+      const healthKey = makeHealthFlagKey(email);
+      setHealthFlagKey(healthKey);
+      
+      console.log('[Login] 로컬 로그인 완료, 헬스 정보 확인 시작');
+      // 헬스 정보 확인 후 로그인 완료 처리
+      await ensureHealthInfoFlow(healthKey);
     } catch (error) {
       console.error('로컬 로그인 실패:', error);
       Alert.alert('로그인 실패', '로그인 처리 중 오류가 발생했습니다.');
@@ -679,7 +750,13 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
   };
 
   const handleHealthModalClose = () => {
-    Alert.alert('알림', '헬스 정보를 입력해야 다음 단계로 진행할 수 있습니다.');
+    // 모달이 닫히지 않도록 방지 (헬스 정보 입력 필수)
+    Alert.alert(
+      '알림', 
+      '헬스 정보를 입력해야 다음 단계로 진행할 수 있습니다.',
+      [{ text: '확인' }]
+    );
+    // 모달을 닫지 않음 (setShowHealthModal(false) 호출하지 않음)
   };
 
   return (
@@ -976,6 +1053,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
             clearTimeout(postMessageTimeoutRef.current);
             postMessageTimeoutRef.current = null;
           }
+          if (webViewLoadTimeoutRef.current) {
+            clearTimeout(webViewLoadTimeoutRef.current);
+            webViewLoadTimeoutRef.current = null;
+          }
           setShowWebView(false);
           setCurrentProvider(null);
           setWebViewLoading(false);
@@ -990,6 +1071,10 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
                 if (postMessageTimeoutRef.current) {
                   clearTimeout(postMessageTimeoutRef.current);
                   postMessageTimeoutRef.current = null;
+                }
+                if (webViewLoadTimeoutRef.current) {
+                  clearTimeout(webViewLoadTimeoutRef.current);
+                  webViewLoadTimeoutRef.current = null;
                 }
                 setShowWebView(false);
                 setCurrentProvider(null);
@@ -1080,10 +1165,52 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
             onMessage={handleWebViewMessage}
             onLoadStart={() => {
               setWebViewLoading(true);
+              
+              // 타임아웃 재설정 (새 페이지 로드 시)
+              if (webViewLoadTimeoutRef.current) {
+                clearTimeout(webViewLoadTimeoutRef.current);
+              }
+              webViewLoadTimeoutRef.current = setTimeout(() => {
+                if (!handledAuthRef.current && webViewLoading) {
+                  console.warn('[Login] WebView 로딩 타임아웃 (onLoadStart)');
+                  setWebViewLoading(false);
+                  setLoading(false);
+                  Alert.alert(
+                    '타임아웃',
+                    '페이지 로딩 시간이 초과되었습니다. 네트워크 연결을 확인하고 다시 시도해주세요.',
+                    [
+                      {
+                        text: '다시 시도',
+                        onPress: () => {
+                          if (webViewRef.current && webViewUrl) {
+                            setWebViewLoading(true);
+                            webViewRef.current.reload();
+                          }
+                        },
+                      },
+                      {
+                        text: '닫기',
+                        style: 'cancel',
+                        onPress: () => {
+                          setShowWebView(false);
+                          setCurrentProvider(null);
+                          handledAuthRef.current = false;
+                        },
+                      },
+                    ]
+                  );
+                }
+              }, 30000);
             }}
             onLoadEnd={(event) => {
               const url = event.nativeEvent.url;
               setWebViewLoading(false);
+              
+              // 로드 완료 시 타임아웃 정리
+              if (webViewLoadTimeoutRef.current) {
+                clearTimeout(webViewLoadTimeoutRef.current);
+                webViewLoadTimeoutRef.current = null;
+              }
               
               // 백엔드 도메인인 경우에만 토큰 추출 시도
               const backendDomain = API_CONFIG.BASE_URL.replace(/^https?:\/\//, '');
@@ -1155,10 +1282,104 @@ export function LoginScreen({ onLoggedIn }: LoginProps) {
                 clearTimeout(postMessageTimeoutRef.current);
                 postMessageTimeoutRef.current = null;
               }
+              if (webViewLoadTimeoutRef.current) {
+                clearTimeout(webViewLoadTimeoutRef.current);
+                webViewLoadTimeoutRef.current = null;
+              }
               
               setWebViewLoading(false);
               setLoading(false);
-              Alert.alert('오류', '페이지를 불러오는 중 오류가 발생했습니다.');
+              
+              // 에러 타입에 따른 메시지 구분
+              const errorCode = nativeEvent?.code;
+              const errorDescription = nativeEvent?.description || '';
+              
+              let errorMessage = '페이지를 불러오는 중 오류가 발생했습니다.';
+              
+              if (errorCode === -1009 || errorDescription.includes('network') || errorDescription.includes('internet')) {
+                errorMessage = '인터넷 연결을 확인해주세요. 네트워크 연결이 필요합니다.';
+              } else if (errorCode === -1001 || errorDescription.includes('timeout')) {
+                errorMessage = '요청 시간이 초과되었습니다. 다시 시도해주세요.';
+              } else if (errorCode === -1003 || errorDescription.includes('host')) {
+                errorMessage = '서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.';
+              } else if (errorCode === -1004 || errorDescription.includes('connect')) {
+                errorMessage = '서버 연결에 실패했습니다. 네트워크 상태를 확인해주세요.';
+              } else if (errorDescription.includes('SSL') || errorDescription.includes('certificate')) {
+                errorMessage = '보안 연결에 실패했습니다.';
+              }
+              
+              Alert.alert(
+                '오류',
+                errorMessage,
+                [
+                  {
+                    text: '다시 시도',
+                    onPress: () => {
+                      // WebView 다시 로드
+                      if (webViewRef.current && webViewUrl) {
+                        setWebViewLoading(true);
+                        webViewRef.current.reload();
+                      }
+                    },
+                  },
+                  {
+                    text: '닫기',
+                    style: 'cancel',
+                    onPress: () => {
+                      setShowWebView(false);
+                      setCurrentProvider(null);
+                      handledAuthRef.current = false;
+                    },
+                  },
+                ]
+              );
+            }}
+            onHttpError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.error('[Login] WebView HTTP 에러:', nativeEvent);
+              
+              const statusCode = nativeEvent?.statusCode;
+              let errorMessage = '서버 오류가 발생했습니다.';
+              
+              if (statusCode === 404) {
+                errorMessage = '페이지를 찾을 수 없습니다.';
+              } else if (statusCode === 500) {
+                errorMessage = '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
+              } else if (statusCode === 503) {
+                errorMessage = '서비스가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요.';
+              } else if (statusCode >= 400 && statusCode < 500) {
+                errorMessage = `요청 오류가 발생했습니다. (${statusCode})`;
+              } else if (statusCode >= 500) {
+                errorMessage = `서버 오류가 발생했습니다. (${statusCode})`;
+              }
+              
+              setWebViewLoading(false);
+              setLoading(false);
+              
+              Alert.alert(
+                'HTTP 오류',
+                errorMessage,
+                [
+                  {
+                    text: '다시 시도',
+                    onPress: () => {
+                      if (webViewRef.current && webViewUrl) {
+                        setWebViewLoading(true);
+                        webViewRef.current.reload();
+                      }
+                    },
+                  },
+                  {
+                    text: '닫기',
+                    style: 'cancel',
+                    onPress: () => {
+                      setShowWebView(false);
+                      setCurrentProvider(null);
+                      handledAuthRef.current = false;
+                    },
+                  },
+                ]
+              );
             }}
             injectedJavaScript={`
               (function() {

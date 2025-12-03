@@ -26,6 +26,7 @@ export interface PostsResponse {
   likeCount: number;
   unLikeCount: number;
   commentCount: number;
+  imageUrls?: string[]; // 백엔드에서 이미지 URL 목록 제공
 }
 
 export interface PostResponse {
