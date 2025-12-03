@@ -705,79 +705,8 @@ export function Community() {
     }
   };
 
-  useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      setLoadingPosts(true);
-      try {
-        const [exerciseRes, foodRes, dietRes] = await Promise.all([
-          api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=EXERCISE`),
-          api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=FOOD`),
-          api.get<any[]>(`${API_CONFIG.ENDPOINTS.GET_POSTS}?postKind=DIET`),
-        ]);
-
-        // 백엔드 원본 데이터 로그 출력
-        console.log('[백엔드 응답] 운동 게시글 원본 데이터:', JSON.stringify(exerciseRes, null, 2));
-        console.log('[백엔드 응답] 음식 게시글 원본 데이터:', JSON.stringify(foodRes, null, 2));
-        console.log('[백엔드 응답] 식단 게시글 원본 데이터:', JSON.stringify(dietRes, null, 2));
-
-        const allPosts: Post[] = [];
-        const categoryMap = ['운동', '음식', '식단'];
-
-        [exerciseRes, foodRes, dietRes].forEach((res, index) => {
-          if (res.success && Array.isArray(res.data)) {
-            console.log(`[백엔드 응답] ${categoryMap[index]} 게시글 배열:`, JSON.stringify(res.data, null, 2));
-            const transformedPosts = res.data.map((post: any, postIndex: number) => {
-              console.log(`[백엔드 응답] ${categoryMap[index]} 게시글[${postIndex}] 원본:`, JSON.stringify(post, null, 2));
-              return normalizePost(post, categoryMap[index]);
-            });
-            allPosts.push(...transformedPosts);
-          }
-        });
-
-        if (allPosts.length > 0) {
-          const enrichedPosts = await enrichPostsWithDetails(allPosts);
-          if (isMounted) {
-            setPosts(enrichedPosts);
-            await AsyncStorage.setItem('communityPosts', JSON.stringify(enrichedPosts));
-          }
-        } else {
-          const savedPosts = await AsyncStorage.getItem('communityPosts');
-          if (savedPosts && isMounted) {
-            const parsed: any[] = JSON.parse(savedPosts);
-            setPosts(parsed.map(item => normalizePost(item)));
-          }
-        }
-
-        // 대회 목록은 백엔드에서 로드 (loadCompetitionPosts에서 처리)
-        
-        const currentUserId = userId;
-        const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
-        if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
-      } catch (error) {
-        try {
-          const savedPosts = await AsyncStorage.getItem('communityPosts');
-          if (savedPosts && isMounted) {
-            const parsed: any[] = JSON.parse(savedPosts);
-            setPosts(parsed.map(item => normalizePost(item)));
-          }
-          // 대회 데이터는 백엔드에서만 가져옴 (loadCompetitionPosts에서 처리)
-          const currentUserId = userId;
-          const savedFollowing = await AsyncStorage.getItem(`following_${currentUserId}`);
-          if (savedFollowing && isMounted) setFollowing(JSON.parse(savedFollowing));
-        } catch (fallbackError) {
-          // 로컬 저장소 로드 실패 시 무시
-        }
-      } finally {
-        if (isMounted) {
-          setLoadingPosts(false);
-        }
-      }
-    })();
-    return () => {
-      isMounted = false;
-    };
-  }, [userId]);
+  // 화면이 포커스될 때만 게시글 로드 (useEffect 대신 useFocusEffect 사용)
+  // 이 useEffect는 제거되었고, refreshPosts를 useFocusEffect에서 호출하도록 변경됨
 
   const loadComments = async (postId: string) => {
     try {
@@ -2058,6 +1987,7 @@ export function Community() {
     setComments(updatedComments);
 
     // 백엔드 API 호출 (댓글 좋아요 API가 있다면)
+    // 대회 게시글인 경우 다른 참가자의 투표 취소는 handleCommentLike에서 처리하므로 여기서는 제거
     try {
       const { likeComment, unlikeComment } = await import('../../api/comments');
       const commentIdNum = Number(commentId);
@@ -2066,26 +1996,6 @@ export function Community() {
           await unlikeComment(commentIdNum);
         } else {
           await likeComment(commentIdNum);
-        }
-        
-        // 대회 게시글인 경우: 다른 참가자의 투표 취소 API 호출
-        if (isCompetitionPost(selectedPost) && !hasLiked) {
-          const otherVotedComment = comments.find(c => 
-            c.id !== commentId && 
-            c.imageUrl && 
-            c.likedBy?.includes(userId)
-          );
-          
-          if (otherVotedComment) {
-            try {
-              const otherCommentIdNum = Number(otherVotedComment.id);
-              if (!isNaN(otherCommentIdNum)) {
-                await unlikeComment(otherCommentIdNum);
-              }
-            } catch (error) {
-              console.log('[Competition] 기존 투표 취소 API 실패:', error);
-            }
-          }
         }
         
         // 대회 게시글이 아닌 경우에만 댓글 목록 새로고침 (대회는 투표 상태 유지를 위해 리로드하지 않음)
@@ -2201,9 +2111,14 @@ export function Community() {
     }
   }, [userId]);
 
-  useEffect(() => {
-    refreshPosts();
-  }, [refreshPosts]);
+  // 화면이 포커스될 때만 게시글 새로고침
+  useFocusEffect(
+    useCallback(() => {
+      if (activeTab === 'posts') {
+        refreshPosts();
+      }
+    }, [refreshPosts, activeTab])
+  );
 
   const handleFollow = async (targetUserId: string) => {
     if (targetUserId === userId) {

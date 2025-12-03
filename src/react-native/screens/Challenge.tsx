@@ -227,10 +227,9 @@ export function Challenge() {
   const userId = currentUser.email;
   const [workoutTimeRanking, setWorkoutTimeRanking] = useState<Array<{ userId: string; userName: string; totalMinutes: number }>>([]);
 
+  // 초기 사용자 진행 상황 로드 (한 번만 실행)
   useEffect(() => {
     loadUserProgress();
-    loadChallenges();
-    loadWorkoutTimeRanking();
   }, []);
 
   // 운동 시간 랭킹 로드 (로컬 저장소에서)
@@ -315,6 +314,7 @@ export function Challenge() {
   // 화면이 포커스될 때마다 챌린지 목록 새로고침 및 운동 시간 랭킹 새로고침
   useFocusEffect(
     React.useCallback(() => {
+      loadUserProgress();
       loadChallenges();
       loadWorkoutTimeRanking();
     }, [])

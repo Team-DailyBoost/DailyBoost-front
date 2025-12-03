@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -99,11 +100,13 @@ export function WorkoutLogger() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [userId, setUserId] = useState<string>('');
 
-  // 사용자 정보 로드
-  useEffect(() => {
-    loadUserInfo();
-    loadTodaysWorkouts();
-  }, []);
+  // 화면이 포커스될 때만 사용자 정보 및 운동 기록 로드
+  useFocusEffect(
+    useCallback(() => {
+      loadUserInfo();
+      loadTodaysWorkouts();
+    }, [])
+  );
 
   // 오늘의 운동 기록 로드 (로컬 + 백엔드)
   const loadTodaysWorkouts = async () => {
